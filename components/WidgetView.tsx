@@ -19,7 +19,9 @@ const UserPanel: React.FC<{
 }> = ({ user, isRight, isMe, onActivityChange, onMoodChange }) => {
   const [showPicker, setShowPicker] = useState(false);
   const activityDef = ACTIVITIES.find(a => a.type === user.activity.type) || ACTIVITIES[0];
-  const char = user.gender === 'female' ? activityDef.charF : activityDef.charM;
+  
+  // Custom Avatar logic: prioritize user.avatar, then fallback to activity/gender character
+  const char = user.avatar || (user.gender === 'female' ? activityDef.charF : activityDef.charM);
   
   return (
     <div className={`flex flex-col h-full w-full p-4 transition-all duration-700 relative ${isRight ? 'bg-indigo-50/60 dark:bg-indigo-900/40' : 'bg-white dark:bg-slate-900'}`}>

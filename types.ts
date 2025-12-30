@@ -41,6 +41,7 @@ export interface Message {
 export interface UserState {
   id: string;
   name: string;
+  avatar?: string;
   gender: Gender;
   activity: UserActivity;
   messages?: Message[];

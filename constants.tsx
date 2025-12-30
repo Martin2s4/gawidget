@@ -73,6 +73,13 @@ export const MOODS = [
   { emoji: '🫠', label: 'Exhausted' },
 ];
 
+export const AVATARS = [
+  '👨', '👩', '🧑', '👨‍🦱', '👩‍🦱', '👨‍🦳', '👩‍🦳', '👨‍🦲', '👶',
+  '🦁', '🐯', '🦊', '🐻', '🐼', '🐨', '🐷', '🐸', '🐵',
+  '👻', '👽', '🤖', '👾', '🎃', '🤡', '👺', '👹', '🔥',
+  '🥑', '🍕', '🍰', '🍣', '🍦', '🍩', '🍪', '🍄', '🌍'
+];
+
 export const INITIAL_ACTIVITY = {
   type: ActivityType.RELAXING,
   statusText: 'Active now',
