@@ -4,7 +4,7 @@ import { ActivityType, UserState } from './types';
 import { ACTIVITIES, MOODS, INITIAL_ACTIVITY } from './constants';
 import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
-import { getHumorousCaption, getSimulatedWeather } from './services/gemini';
+import { getHumorousCaption, getSimulatedWeather } from './services/localSync';
 
 const App: React.FC = () => {
   const [isPaired, setIsPaired] = useState(() => localStorage.getItem('is_paired') === 'true');
@@ -74,29 +74,30 @@ const App: React.FC = () => {
       lon = pos.coords.longitude;
     } catch {}
 
-    // Get vibe and weather from Gemini
-    const [weather, caption] = await Promise.all([
-      getSimulatedWeather(lat, lon),
-      getHumorousCaption(type, customText || 'Active', MOODS[0].label)
-    ]);
+    // Get vibe and weather locally
+    const weather = getSimulatedWeather(lat, lon);
+    const caption = getHumorousCaption(type, customText || 'Active', MOODS[0].label);
 
-    setHumorCaption(caption);
-    setMyState(prev => ({
-      ...prev,
-      name: userName || 'Me',
-      activity: {
-        type,
-        customText: customText,
-        statusText: customText ? 'Custom Status' : 'Automatic Sync',
-        mood: MOODS[Math.floor(Math.random() * MOODS.length)].emoji + ' Feeling good',
-        timestamp: Date.now(),
-        weather
-      }
-    }));
-    
-    setIsUpdating(false);
-    setShowCustomModal(false);
-    setCustomInputValue('');
+    // Small delay to simulate sync
+    setTimeout(() => {
+      setHumorCaption(caption);
+      setMyState(prev => ({
+        ...prev,
+        name: userName || 'Me',
+        activity: {
+          type,
+          customText: customText,
+          statusText: customText ? 'Custom Status' : 'Automatic Sync',
+          mood: MOODS[Math.floor(Math.random() * MOODS.length)].emoji + ' Feeling good',
+          timestamp: Date.now(),
+          weather
+        }
+      }));
+      
+      setIsUpdating(false);
+      setShowCustomModal(false);
+      setCustomInputValue('');
+    }, 600);
   };
 
   if (!isPaired) {
@@ -184,12 +185,12 @@ const App: React.FC = () => {
                </div>
             )}
 
-            {/* AI Vibe Card */}
+            {/* Predefined Vibe Card */}
             <div className="bg-indigo-600 p-8 rounded-[3rem] text-white shadow-2xl shadow-indigo-100 relative overflow-hidden group">
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform duration-500">
                 <svg className="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
               </div>
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-3 block">Gemini Status Vibe</span>
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-3 block">Status Vibe</span>
               <p className="text-2xl font-bold italic leading-snug">"{humorCaption}"</p>
             </div>
 
