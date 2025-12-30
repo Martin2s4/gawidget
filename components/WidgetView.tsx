@@ -5,6 +5,7 @@ import { ACTIVITIES } from '../constants';
 
 const UserPanel: React.FC<{ user: UserState; isRight?: boolean }> = ({ user, isRight }) => {
   const activityDef = ACTIVITIES.find(a => a.type === user.activity.type) || ACTIVITIES[0];
+  const char = user.gender === 'female' ? activityDef.charF : activityDef.charM;
   
   return (
     <div className={`flex flex-col h-full w-full p-6 transition-all duration-700 ${isRight ? 'bg-indigo-50/60' : 'bg-white'}`}>
@@ -20,7 +21,7 @@ const UserPanel: React.FC<{ user: UserState; isRight?: boolean }> = ({ user, isR
 
       <div className="flex-1 flex flex-col items-center justify-center">
         <div className={`w-28 h-28 rounded-[2rem] flex items-center justify-center text-6xl shadow-sm border ${activityDef.border} ${activityDef.color}`}>
-          {activityDef.char}
+          {char}
         </div>
         <div className="mt-5 text-center">
           <div className="text-lg font-black text-gray-900 leading-none truncate max-w-[120px]">

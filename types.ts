@@ -14,6 +14,8 @@ export enum ActivityType {
   CUSTOM = 'Custom'
 }
 
+export type Gender = 'male' | 'female';
+
 export interface WeatherInfo {
   temp: number;
   condition: string;
@@ -32,5 +34,6 @@ export interface UserActivity {
 export interface UserState {
   id: string;
   name: string;
+  gender: Gender;
   activity: UserActivity;
 }
