@@ -16,6 +16,19 @@ const CAPTIONS: Record<string, string[]> = {
   [ActivityType.CUSTOM]: ["Living my best life! ✨", "Just doing my thing. ✌️", "Keeping it real. 🔥", "Vibe check: Passed. ✅"]
 };
 
+export const WELCOME_PHRASES = [
+  "Back for more syncing? 🛰️",
+  "The better half is here! 🌟",
+  "Partner in crime, back online. 🕵️‍♂️",
+  "Ready to show 'em how it's done? 💪",
+  "Syncing the vibes... please wait (jk). 🔥",
+  "The favorite person has entered the chat. ✨",
+  "Is it snack time yet? 🍕",
+  "Go get 'em, Tiger! 🐅",
+  "You look great today, just sayin'. 😉",
+  "Time to make some memories. 📸"
+];
+
 export const getHumorousCaption = (activity: ActivityType, status: string, mood: string): string => {
   const options = CAPTIONS[activity] || CAPTIONS[ActivityType.CUSTOM];
   return options[Math.floor(Math.random() * options.length)];
@@ -33,7 +46,6 @@ export const getSimulatedWeather = (lat?: number, lon?: number): WeatherInfo => 
   const hour = new Date().getHours();
   let baseIndex = (hour >= 6 && hour <= 18) ? 0 : 4;
   
-  // Use lat/lon to slightly bias the temp if available (mock logic)
   let bias = 0;
   if (lat) bias = Math.floor(lat / 10);
 

@@ -4,18 +4,21 @@ import { ActivityType, UserState, Gender, Message } from './types';
 import { ACTIVITIES, MOODS, INITIAL_ACTIVITY } from './constants';
 import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
-import { getHumorousCaption, getSimulatedWeather } from './services/localSync';
+import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 
 const App: React.FC = () => {
   const [isPaired, setIsPaired] = useState(() => localStorage.getItem('is_paired') === 'true');
   const [userName, setUserName] = useState(() => localStorage.getItem('user_name') || '');
   const [userGender, setUserGender] = useState<Gender>(() => (localStorage.getItem('user_gender') as Gender) || 'male');
   const [pairingCode, setPairingCode] = useState(() => localStorage.getItem('my_pairing_code') || Math.random().toString(36).substring(2, 8).toUpperCase());
-  
+  const [welcomeText, setWelcomeText] = useState('');
+
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   useEffect(() => {
     const handler = (e: any) => { e.preventDefault(); setDeferredPrompt(e); };
     window.addEventListener('beforeinstallprompt', handler);
+    // Set a random funny welcome phrase on mount
+    setWelcomeText(WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)]);
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
@@ -113,11 +116,33 @@ const App: React.FC = () => {
     setMessages(prev => [...prev, newMessage]);
     setChatText('');
 
+    // Simulate real person reply (partner-specific vibes, not AI)
     setTimeout(() => {
-      const replies = ["Got it! 🔥", "Talk soon? ❤️", "Ayy, nice! 😎", "Working hard! 💪", "Miss you! ✨"];
-      const reply: Message = { id: Math.random().toString(36), senderId: activePartnerId, text: replies[Math.floor(Math.random() * replies.length)], timestamp: Date.now() };
+      const partner = partners.find(p => p.id === activePartnerId);
+      if (!partner) return;
+      
+      const responses = [
+        "Love that! ❤️", "Miss you! ✨", "See you later? 😉", "You're the best!", 
+        "Haha exactly! 😂", "Can't wait for our next sync.", "Thinking about you too! 🔥",
+        "Just saw your status update! Nice icon choice. 😎"
+      ];
+      const replyText = responses[Math.floor(Math.random() * responses.length)];
+      
+      const reply: Message = { 
+        id: Math.random().toString(36), 
+        senderId: activePartnerId, 
+        text: replyText, 
+        timestamp: Date.now() 
+      };
       setMessages(prev => [...prev, reply]);
-    }, 1500);
+    }, 2000 + Math.random() * 3000);
+  };
+
+  const deleteChatHistory = () => {
+    if (!activePartnerId) return;
+    if (confirm(`Are you sure you want to delete all chat history with ${activePartner?.name}?`)) {
+      setMessages(prev => prev.filter(m => m.senderId !== activePartnerId && m.senderId !== 'me'));
+    }
   };
 
   const addPartner = () => {
@@ -125,31 +150,36 @@ const App: React.FC = () => {
     
     setIsUpdating(true);
     
-    // Simulate network handshake
+    // Simulate bidirectional sync handshake
     setTimeout(() => {
+      const newPartnerId = 'partner-' + partnerCodeInput;
       const newPartner: UserState = { 
-        id: Math.random().toString(), 
+        id: newPartnerId, 
         name: partnerNameInput, 
         gender: Math.random() > 0.5 ? 'female' : 'male', 
         activity: { ...INITIAL_ACTIVITY, type: ActivityType.RELAXING } 
       };
       
-      setPartners(prev => [...prev, newPartner]);
-      setActivePartnerId(newPartner.id);
+      setPartners(prev => {
+        if (prev.find(p => p.id === newPartner.id)) return prev;
+        return [...prev, newPartner];
+      });
+      
+      setActivePartnerId(newPartnerId);
       setPartnerCodeInput(''); 
       setPartnerNameInput(''); 
       setShowAddPartnerModal(false);
       setIsUpdating(false);
       
-      // Simulate confirmation message
-      const welcome: Message = { 
-        id: 'welcome-' + Date.now(), 
-        senderId: newPartner.id, 
-        text: `Hey ${userName}! We're synced! 🎉`, 
+      // Simulation: The partner also "Accepts" the handshake, showing bidirectional sync
+      const syncEvent: Message = { 
+        id: 'sync-' + Date.now(), 
+        senderId: newPartnerId, 
+        text: `Handshake complete! 🤝 I've added you too, ${userName}. My code is ${pairingCode}.`, 
         timestamp: Date.now() 
       };
-      setMessages(prev => [...prev, welcome]);
-    }, 1200);
+      setMessages(prev => [...prev, syncEvent]);
+    }, 1500);
   };
 
   const handleRemovePartner = (id: string) => {
@@ -160,7 +190,6 @@ const App: React.FC = () => {
 
   const handleReconnectPartner = (id: string) => {
     setActivePartnerId(id);
-    // Switch to status or widget to show them
     setActiveTab('status');
   };
 
@@ -221,7 +250,7 @@ const App: React.FC = () => {
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500">
             <header className="flex items-center justify-between">
               <div>
-                <h2 className="text-3xl font-black text-slate-900 leading-tight">Hey, {userName}</h2>
+                <h2 className="text-3xl font-black text-slate-900 leading-tight">Hey {userName}, {welcomeText}</h2>
                 <div className="flex items-center space-x-3 mt-1 relative" ref={dropdownRef}>
                   <p className="text-slate-500 font-medium">Currently feeling:</p>
                   <button onClick={() => setShowMoodDropdown(!showMoodDropdown)} className="flex items-center space-x-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm font-bold text-slate-700">
@@ -271,25 +300,31 @@ const App: React.FC = () => {
                 {/* Chat Header */}
                 <div className="px-8 py-4 border-b border-slate-50 flex items-center justify-between bg-slate-50/30">
                   <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xl shadow-inner">
+                    <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xl shadow-inner border-2 border-white">
                       {activePartner.gender === 'female' ? '👩' : '👨'}
                     </div>
                     <div>
                       <h4 className="text-sm font-black text-slate-800">{activePartner.name}</h4>
                       <div className="flex items-center space-x-1">
-                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span>
-                        <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Currently {activePartner.activity.type}</span>
+                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                        <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Active Partner</span>
                       </div>
                     </div>
                   </div>
-                  <div className="text-xs">{activePartner.activity.mood.split(' ')[0]}</div>
+                  <button 
+                    onClick={deleteChatHistory}
+                    className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                    title="Clear chat"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar">
                    {messages.filter(m => m.senderId === 'me' || m.senderId === activePartnerId).length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-4">
                         <div className="text-4xl opacity-20">💬</div>
-                        <p className="italic font-medium">Say hi to {activePartner.name}!</p>
+                        <p className="italic font-medium">Say something sweet to {activePartner.name}!</p>
                       </div>
                    ) : (
                       messages.filter(m => m.senderId === 'me' || m.senderId === activePartnerId).map(msg => (
@@ -313,7 +348,7 @@ const App: React.FC = () => {
              ) : (
                <div className="flex-1 flex flex-col items-center justify-center bg-white rounded-[3rem] p-12 border border-slate-100 shadow-sm text-center">
                   <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center text-5xl mb-6">🔒</div>
-                  <h3 className="text-2xl font-black text-slate-900 mb-2">No Active Connection</h3>
+                  <h3 className="text-2xl font-black text-slate-900 mb-2">No Active Partner</h3>
                   <p className="text-slate-500 max-w-xs mb-8">Pair with someone to start sharing activities and messages in real-time!</p>
                   <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl shadow-indigo-100">Go to Settings</button>
                </div>
@@ -329,7 +364,7 @@ const App: React.FC = () => {
                    <h3 className="text-lg font-black text-slate-800 ml-1">Your Profile</h3>
                    <div className="space-y-2">
                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Display Name</label>
-                      <input type="text" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
+                      <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
                    </div>
                    <div className="space-y-2">
                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Avatar Style</label>
