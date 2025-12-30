@@ -31,6 +31,10 @@
       padding-bottom: env(safe-area-inset-bottom, 1.5rem);
     }
   </style>
+  <script>
+    // Safety shim for environments expecting Node.js 'process' globals
+    window.process = { env: { API_KEY: "" } };
+  </script>
   <script type="importmap">
 {
   "imports": {
@@ -38,14 +42,15 @@
     "react-dom": "https://esm.sh/react-dom@19.0.0",
     "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
     "react-dom/": "https://esm.sh/react-dom@19.0.0/",
-    "react/": "https://esm.sh/react@19.0.0/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0"
+    "react/": "https://esm.sh/react@19.0.0/"
   }
 }
 </script>
 </head>
 <body>
   <div id="root"></div>
+  <!-- Essential: Linking the application entry point -->
+  <script type="module" src="index.tsx"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
