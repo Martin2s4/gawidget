@@ -46,3 +46,10 @@ export interface UserState {
   activity: UserActivity;
   messages?: Message[];
 }
+
+export interface PartnerRecord {
+  id: string;
+  roomCode: string;
+  state: UserState;
+  lastSeen: number;
+}
