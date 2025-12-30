@@ -72,7 +72,11 @@ const App: React.FC = () => {
     localStorage.setItem('my_pairing_code', pairingCode);
     localStorage.setItem('connected_partners', JSON.stringify(partners));
     localStorage.setItem('sync_messages', JSON.stringify(messages));
-    if (activePartnerId) localStorage.setItem('active_partner_id', activePartnerId);
+    if (activePartnerId !== null) {
+        localStorage.setItem('active_partner_id', activePartnerId);
+    } else {
+        localStorage.removeItem('active_partner_id');
+    }
   }, [myState, userName, userGender, isPaired, pairingCode, partners, activePartnerId, messages]);
 
   const handleUpdate = async (type: ActivityType, customText?: string) => {
@@ -104,29 +108,64 @@ const App: React.FC = () => {
   };
 
   const sendMessage = () => {
-    if (!chatText.trim()) return;
+    if (!chatText.trim() || !activePartnerId) return;
     const newMessage: Message = { id: Math.random().toString(36), senderId: 'me', text: chatText, timestamp: Date.now() };
     setMessages(prev => [...prev, newMessage]);
     setChatText('');
 
-    if (activePartnerId) {
-      setTimeout(() => {
-        const replies = ["Cool! 🔥", "Talk soon? ❤️", "Ayy, nice! 😎", "Working hard! 💪"];
-        const reply: Message = { id: Math.random().toString(36), senderId: activePartnerId, text: replies[Math.floor(Math.random() * replies.length)], timestamp: Date.now() };
-        setMessages(prev => [...prev, reply]);
-      }, 1500);
-    }
+    setTimeout(() => {
+      const replies = ["Got it! 🔥", "Talk soon? ❤️", "Ayy, nice! 😎", "Working hard! 💪", "Miss you! ✨"];
+      const reply: Message = { id: Math.random().toString(36), senderId: activePartnerId, text: replies[Math.floor(Math.random() * replies.length)], timestamp: Date.now() };
+      setMessages(prev => [...prev, reply]);
+    }, 1500);
   };
 
   const addPartner = () => {
     if (!partnerCodeInput || !partnerNameInput) return;
-    const newPartner: UserState = { id: Math.random().toString(), name: partnerNameInput, gender: Math.random() > 0.5 ? 'female' : 'male', activity: { ...INITIAL_ACTIVITY, type: ActivityType.SLEEPING } };
-    setPartners(prev => [...prev, newPartner]);
-    if (!activePartnerId) setActivePartnerId(newPartner.id);
-    setPartnerCodeInput(''); setPartnerNameInput(''); setShowAddPartnerModal(false);
+    
+    setIsUpdating(true);
+    
+    // Simulate network handshake
+    setTimeout(() => {
+      const newPartner: UserState = { 
+        id: Math.random().toString(), 
+        name: partnerNameInput, 
+        gender: Math.random() > 0.5 ? 'female' : 'male', 
+        activity: { ...INITIAL_ACTIVITY, type: ActivityType.RELAXING } 
+      };
+      
+      setPartners(prev => [...prev, newPartner]);
+      setActivePartnerId(newPartner.id);
+      setPartnerCodeInput(''); 
+      setPartnerNameInput(''); 
+      setShowAddPartnerModal(false);
+      setIsUpdating(false);
+      
+      // Simulate confirmation message
+      const welcome: Message = { 
+        id: 'welcome-' + Date.now(), 
+        senderId: newPartner.id, 
+        text: `Hey ${userName}! We're synced! 🎉`, 
+        timestamp: Date.now() 
+      };
+      setMessages(prev => [...prev, welcome]);
+    }, 1200);
+  };
+
+  const handleRemovePartner = (id: string) => {
+    if (activePartnerId === id) {
+        setActivePartnerId(null);
+    }
+  };
+
+  const handleReconnectPartner = (id: string) => {
+    setActivePartnerId(id);
+    // Switch to status or widget to show them
+    setActiveTab('status');
   };
 
   const activePartner = partners.find(p => p.id === activePartnerId) || null;
+  const inactivePartners = partners.filter(p => p.id !== activePartnerId);
 
   if (!isPaired) {
     return (
@@ -139,7 +178,7 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Your Name</label>
-              <input type="text" placeholder="Alex" value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none font-bold text-lg" />
+              <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none font-bold text-lg" />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Avatar Style</label>
@@ -167,10 +206,9 @@ const App: React.FC = () => {
           <button onClick={() => setActiveTab('widget')} className={`p-4 rounded-2xl transition-all ${activeTab === 'widget' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>
           </button>
-          {/* Chat Bubble Nav Item */}
           <button onClick={() => setActiveTab('chat')} className={`p-4 rounded-2xl transition-all relative ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-             <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></div>
+             {activePartnerId && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></div>}
           </button>
           <button onClick={() => setActiveTab('settings')} className={`p-4 rounded-2xl transition-all ${activeTab === 'settings' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -228,12 +266,33 @@ const App: React.FC = () => {
 
         {activeTab === 'chat' && (
           <div className="flex flex-col h-[75vh] animate-in slide-in-from-bottom-5 duration-500">
-             <div className="flex-1 bg-white rounded-[3rem] p-8 border border-slate-100 shadow-sm flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2 chat-scrollbar">
-                   {messages.length === 0 ? (
-                      <div className="h-full flex items-center justify-center text-slate-300 italic font-medium">Start the conversation... 👋</div>
+             {activePartner ? (
+               <div className="flex-1 bg-white rounded-[3rem] border border-slate-100 shadow-sm flex flex-col overflow-hidden">
+                {/* Chat Header */}
+                <div className="px-8 py-4 border-b border-slate-50 flex items-center justify-between bg-slate-50/30">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xl shadow-inner">
+                      {activePartner.gender === 'female' ? '👩' : '👨'}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">{activePartner.name}</h4>
+                      <div className="flex items-center space-x-1">
+                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span>
+                        <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Currently {activePartner.activity.type}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-xs">{activePartner.activity.mood.split(' ')[0]}</div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar">
+                   {messages.filter(m => m.senderId === 'me' || m.senderId === activePartnerId).length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-4">
+                        <div className="text-4xl opacity-20">💬</div>
+                        <p className="italic font-medium">Say hi to {activePartner.name}!</p>
+                      </div>
                    ) : (
-                      messages.map(msg => (
+                      messages.filter(m => m.senderId === 'me' || m.senderId === activePartnerId).map(msg => (
                         <div key={msg.id} className={`flex ${msg.senderId === 'me' ? 'justify-end' : 'justify-start'}`}>
                            <div className={`max-w-[75%] px-5 py-3 rounded-3xl text-sm font-semibold shadow-sm ${msg.senderId === 'me' ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-slate-100 text-slate-700 rounded-tl-none'}`}>
                               {msg.text}
@@ -244,11 +303,21 @@ const App: React.FC = () => {
                    )}
                    <div ref={chatEndRef} />
                 </div>
-                <div className="flex space-x-3">
-                   <input type="text" placeholder="Type a message..." value={chatText} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
-                   <button onClick={sendMessage} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black active:scale-95 transition-all">Send</button>
+                <div className="p-6 bg-white border-t border-slate-50">
+                  <div className="flex space-x-3">
+                    <input type="text" placeholder="Type a message..." value={chatText} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
+                    <button onClick={sendMessage} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black active:scale-95 transition-all shadow-lg shadow-indigo-100">Send</button>
+                  </div>
                 </div>
-             </div>
+               </div>
+             ) : (
+               <div className="flex-1 flex flex-col items-center justify-center bg-white rounded-[3rem] p-12 border border-slate-100 shadow-sm text-center">
+                  <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center text-5xl mb-6">🔒</div>
+                  <h3 className="text-2xl font-black text-slate-900 mb-2">No Active Connection</h3>
+                  <p className="text-slate-500 max-w-xs mb-8">Pair with someone to start sharing activities and messages in real-time!</p>
+                  <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl shadow-indigo-100">Go to Settings</button>
+               </div>
+             )}
           </div>
         )}
 
@@ -278,18 +347,65 @@ const App: React.FC = () => {
                   </div>
                 </div>
              </div>
+
              <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
-                <div className="flex items-center justify-between"><h3 className="text-lg font-black text-slate-800 ml-1">Paired Partner</h3><button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-xl shadow-sm">Pair Code</button></div>
-                {partners.length === 0 ? (<div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2rem]"><p className="text-slate-400 font-medium">No partners linked yet.</p></div>) : (
-                  <div className="space-y-3">
-                    {partners.map(p => (
-                      <div key={p.id} onClick={() => setActivePartnerId(p.id)} className={`flex items-center justify-between p-4 rounded-2xl border-2 cursor-pointer transition-all ${activePartnerId === p.id ? 'border-indigo-500 bg-indigo-50/30' : 'border-slate-50 bg-white hover:border-indigo-100'}`}>
-                        <div className="flex items-center space-x-4"><div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl ${activePartnerId === p.id ? 'bg-indigo-500 text-white' : 'bg-slate-50 text-slate-400'}`}>{p.gender === 'female' ? '👩' : '👨'}</div><div><p className="font-black text-slate-800">{p.name}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{activePartnerId === p.id ? 'Active Partner' : 'Connected'}</p></div></div>
-                      </div>
-                    ))}
-                  </div>
+                <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-black text-slate-800 ml-1">Paired Partner</h3>
+                    <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-xl shadow-sm">Pair Code</button>
+                </div>
+                
+                {activePartner ? (
+                    <div className="flex items-center justify-between p-4 rounded-2xl border-2 border-indigo-500 bg-indigo-50/30 transition-all">
+                        <div className="flex items-center space-x-4">
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-indigo-500 text-white">
+                                {activePartner.gender === 'female' ? '👩' : '👨'}
+                            </div>
+                            <div>
+                                <p className="font-black text-slate-800">{activePartner.name}</p>
+                                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">Active Partner</p>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={() => handleRemovePartner(activePartner.id)}
+                            className="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-lg hover:bg-rose-100 transition-colors"
+                        >
+                            Remove
+                        </button>
+                    </div>
+                ) : (
+                    <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2rem]">
+                        <p className="text-slate-400 font-medium">No partner currently active.</p>
+                    </div>
                 )}
              </div>
+
+             {inactivePartners.length > 0 && (
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
+                    <h3 className="text-lg font-black text-slate-800 ml-1">Previous Connections</h3>
+                    <div className="space-y-3">
+                        {inactivePartners.map(p => (
+                            <div key={p.id} className="flex items-center justify-between p-4 rounded-2xl border border-slate-100 bg-slate-50/50">
+                                <div className="flex items-center space-x-4">
+                                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-slate-200 text-slate-500">
+                                        {p.gender === 'female' ? '👩' : '👨'}
+                                    </div>
+                                    <div>
+                                        <p className="font-black text-slate-700">{p.name}</p>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Previously Linked</p>
+                                    </div>
+                                </div>
+                                <button 
+                                    onClick={() => handleReconnectPartner(p.id)}
+                                    className="text-[10px] font-black text-indigo-600 uppercase tracking-widest bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors"
+                                >
+                                    Reconnect
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+             )}
+
              <div className="pt-4 flex justify-between items-center px-4"><button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-red-400 text-xs font-bold hover:underline">Reset Session</button><span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em] opacity-80">v4.0 Sync Pro</span></div>
           </div>
         )}
@@ -308,7 +424,7 @@ const App: React.FC = () => {
         <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center space-y-1 transition-all relative ${activeTab === 'chat' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
           <span className="text-[9px] font-black uppercase tracking-widest">Chat</span>
-          <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white"></div>
+          {activePartnerId && <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white"></div>}
         </button>
         <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'settings' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -321,7 +437,7 @@ const App: React.FC = () => {
            <div className="bg-white w-full max-sm rounded-[3rem] p-10 shadow-2xl scale-in duration-300">
               <div className="text-center mb-6"><div className="w-20 h-20 bg-indigo-50 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">🛰️</div><h3 className="text-2xl font-black text-slate-900 leading-tight">Link Partner</h3></div>
               <div className="space-y-4 mb-6">
-                <input type="text" placeholder="Their Name" value={partnerNameInput} onChange={e => setPartnerNameInput(e.target.value)} className="w-full p-4 bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none rounded-2xl font-bold" />
+                <input type="text" placeholder="Name" value={partnerNameInput} onChange={e => setPartnerNameInput(e.target.value)} className="w-full p-4 bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none rounded-2xl font-bold" />
                 <input autoFocus type="text" maxLength={6} placeholder="Sync Code" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none rounded-2xl font-black text-center text-xl tracking-widest" />
               </div>
               <div className="flex space-x-3"><button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-bold text-gray-400">Cancel</button><button onClick={addPartner} disabled={!partnerCodeInput || !partnerNameInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">Link</button></div>
