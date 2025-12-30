@@ -30,6 +30,20 @@
     .safe-bottom {
       padding-bottom: env(safe-area-inset-bottom, 1.5rem);
     }
+    /* Custom Chat Scrollbar */
+    .chat-scrollbar::-webkit-scrollbar {
+      width: 5px;
+    }
+    .chat-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .chat-scrollbar::-webkit-scrollbar-thumb {
+      background: #e0e7ff; /* indigo-100 */
+      border-radius: 10px;
+    }
+    .chat-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #c7d2fe; /* indigo-200 */
+    }
   </style>
   <script>
     // Safety shim for environments expecting Node.js 'process' globals
@@ -49,7 +63,6 @@
 </head>
 <body>
   <div id="root"></div>
-  <!-- Essential: Linking the application entry point -->
   <script type="module" src="index.tsx"></script>
   <script>
     if ('serviceWorker' in navigator) {

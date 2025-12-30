@@ -31,9 +31,17 @@ export interface UserActivity {
   weather?: WeatherInfo;
 }
 
+export interface Message {
+  id: string;
+  senderId: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface UserState {
   id: string;
   name: string;
   gender: Gender;
   activity: UserActivity;
+  messages?: Message[];
 }
