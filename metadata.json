@@ -1,0 +1,7 @@
+{
+  "name": "PartnerSync Widget",
+  "description": "A high-fidelity PWA widget for partners to share activities, moods, and weather in real-time with offline-first support.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
