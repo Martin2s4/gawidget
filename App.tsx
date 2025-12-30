@@ -7,7 +7,7 @@ import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 
 // Global Broadcast Channel for P2P Simulation
-const syncChannel = new BroadcastChannel('partnersync_v9_instant');
+const syncChannel = new BroadcastChannel('partnersync_v10_final');
 
 const App: React.FC = () => {
   // --- User Identity ---
@@ -16,14 +16,17 @@ const App: React.FC = () => {
   const [userGender, setUserGender] = useState<Gender>(() => (localStorage.getItem('user_gender') as Gender) || 'male');
   const [userAvatar, setUserAvatar] = useState(() => localStorage.getItem('user_avatar') || '👨');
   
-  // Unique 6-character Alphanumeric Room Code
-  const [pairingCode, setPairingCode] = useState(() => {
-    const saved = localStorage.getItem('my_pairing_code');
+  // Permanent Personal Address (The one you give to others)
+  const [myRoomCode, setMyRoomCode] = useState(() => {
+    const saved = localStorage.getItem('my_room_code');
     if (saved) return saved;
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    localStorage.setItem('my_pairing_code', newCode);
+    localStorage.setItem('my_room_code', newCode);
     return newCode;
   });
+
+  // Current Active Sync Channel (Defaults to your own room)
+  const [currentRoomCode, setCurrentRoomCode] = useState(() => localStorage.getItem('active_room_code') || myRoomCode);
 
   const [isOnboarded, setIsOnboarded] = useState(() => localStorage.getItem('is_onboarded') === 'true');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
@@ -56,11 +59,11 @@ const App: React.FC = () => {
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const roomRef = useRef(pairingCode);
+  const roomRef = useRef(currentRoomCode);
 
   // --- Persistence & Theme Logic ---
   useEffect(() => {
-    roomRef.current = pairingCode;
+    roomRef.current = currentRoomCode;
     localStorage.setItem('user_id', userId);
     localStorage.setItem('user_name', userName);
     localStorage.setItem('user_gender', userGender);
@@ -70,13 +73,15 @@ const App: React.FC = () => {
     localStorage.setItem('partner_state', JSON.stringify(partnerState));
     localStorage.setItem('chat_history', JSON.stringify(messages));
     localStorage.setItem('theme', darkMode ? 'dark' : 'light');
+    localStorage.setItem('active_room_code', currentRoomCode);
+    localStorage.setItem('my_room_code', myRoomCode);
     
     if (darkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
-  }, [myState, partnerState, messages, userName, userGender, userAvatar, isOnboarded, pairingCode, darkMode, userId]);
+  }, [myState, partnerState, messages, userName, userGender, userAvatar, isOnboarded, currentRoomCode, myRoomCode, darkMode, userId]);
 
   // --- INSTANT P2P SYNC ENGINE ---
   useEffect(() => {
@@ -92,7 +97,7 @@ const App: React.FC = () => {
       switch (type) {
         case 'P2P_HANDSHAKE':
           setPartnerState(payload);
-          // If we received a handshake, we send one back immediately to "fuse" the connection
+          // Auto-reply to finalize mutual link
           if (event.data.isInitial) {
             syncChannel.postMessage({
               type: 'P2P_HANDSHAKE',
@@ -128,7 +133,17 @@ const App: React.FC = () => {
 
   // --- Actions ---
   const broadcast = (type: string, payload: any, extra = {}) => {
-    syncChannel.postMessage({ type, payload, senderId: userId, targetCode: pairingCode, ...extra });
+    syncChannel.postMessage({ type, payload, senderId: userId, targetCode: currentRoomCode, ...extra });
+  };
+
+  const regenerateMyCode = () => {
+    const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setMyRoomCode(newCode);
+    // If not currently joined to someone else, move our sync channel to the new code too
+    if (!partnerState) {
+      setCurrentRoomCode(newCode);
+      roomRef.current = newCode;
+    }
   };
 
   const handleActivityUpdate = async (type: ActivityType, customText?: string) => {
@@ -189,10 +204,18 @@ const App: React.FC = () => {
     const code = partnerCodeInput.trim().toUpperCase();
     if (!code) return;
 
-    // Join room & broadcast presence
-    setPairingCode(code);
+    // Switch sync channel to the partner's room
+    setCurrentRoomCode(code);
     roomRef.current = code;
-    broadcast('P2P_HANDSHAKE', myState, { isInitial: true });
+    
+    // Broadcast presence immediately to target room
+    syncChannel.postMessage({
+        type: 'P2P_HANDSHAKE',
+        payload: myState,
+        senderId: userId,
+        targetCode: code,
+        isInitial: true
+    });
 
     setShowAddPartnerModal(false);
     setPartnerCodeInput('');
@@ -202,9 +225,9 @@ const App: React.FC = () => {
   const unlink = () => {
     broadcast('P2P_UNLINK', null);
     setPartnerState(null);
-    const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setPairingCode(newCode);
-    roomRef.current = newCode;
+    // Return to my own personal room
+    setCurrentRoomCode(myRoomCode);
+    roomRef.current = myRoomCode;
   };
 
   if (!isOnboarded) {
@@ -268,12 +291,12 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              {/* THEME TOGGLE (Visible on Home) */}
               <button 
                 onClick={() => setDarkMode(!darkMode)}
-                className="w-14 h-14 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border dark:border-slate-700 flex items-center justify-center text-2xl transition-all hover:scale-105 active:scale-95"
+                title="Toggle Theme"
+                className="w-14 h-14 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border dark:border-slate-700 flex items-center justify-center text-2xl transition-all hover:scale-105 active:scale-95 group"
               >
-                {darkMode ? '🌙' : '☀️'}
+                <span className="group-hover:rotate-12 transition-transform">{darkMode ? '🌙' : '☀️'}</span>
               </button>
             </header>
 
@@ -301,8 +324,20 @@ const App: React.FC = () => {
               onMoodChange={updateMood} 
             />
             <div className="text-center">
-              <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest">Your Room Address: <span className="text-indigo-600 dark:text-indigo-400 text-lg font-black">{pairingCode}</span></p>
-              <p className="text-[10px] text-slate-300 dark:text-slate-500 mt-2">Entering this on a partner device will link you instantly.</p>
+              {partnerState ? (
+                  <div className="bg-emerald-50 dark:bg-emerald-900/20 px-6 py-4 rounded-3xl border border-emerald-100 dark:border-emerald-800 flex items-center space-x-3">
+                     <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                     <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Linked with {partnerState.name}</span>
+                  </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-center space-x-3 mb-2">
+                    <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest">Share Your Address:</p>
+                  </div>
+                  <p className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.2em]">{myRoomCode}</p>
+                  <p className="text-[10px] text-slate-300 dark:text-slate-500 mt-2">Entering this on a partner's device will fuse your widgets.</p>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -318,7 +353,7 @@ const App: React.FC = () => {
                     </div>
                     <div>
                       <h4 className="text-sm font-black dark:text-white leading-none">{partnerState.name}</h4>
-                      <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">Connected</span>
+                      <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">Sync Active</span>
                     </div>
                   </div>
                 </div>
@@ -343,7 +378,7 @@ const App: React.FC = () => {
                   <div className="w-24 h-24 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center text-5xl mb-6 shadow-inner">🔒</div>
                   <h3 className="text-2xl font-black dark:text-white mb-2">Connect to Chat</h3>
                   <p className="text-slate-400 text-sm max-w-[200px]">Link with a partner in the Hub to start sharing messages.</p>
-                  <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black mt-8 shadow-xl hover:shadow-indigo-500/20 active:scale-95 transition-all">Go to Hub</button>
+                  <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black mt-8 shadow-xl active:scale-95 transition-all">Go to Hub</button>
                </div>
              )}
           </div>
@@ -353,22 +388,6 @@ const App: React.FC = () => {
           <div className="max-w-xl mx-auto space-y-8 animate-in slide-in-from-right-4">
              <h2 className="text-4xl font-black text-slate-900 dark:text-white">Hub</h2>
              
-             {/* THEME TOGGLE (Hub Version) */}
-             <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm flex items-center justify-between">
-                <div>
-                  <h3 className="font-black text-slate-800 dark:text-slate-100">Interface Mode</h3>
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-1">{darkMode ? 'Dark' : 'Light'} Side Active</p>
-                </div>
-                <button 
-                  onClick={() => setDarkMode(!darkMode)}
-                  className="w-16 h-10 bg-slate-100 dark:bg-indigo-600 rounded-full relative p-1 transition-all"
-                >
-                  <div className={`w-8 h-8 rounded-full bg-white flex items-center justify-center shadow-lg transition-transform duration-300 ${darkMode ? 'translate-x-6' : 'translate-x-0'}`}>
-                    {darkMode ? '🌙' : '☀️'}
-                  </div>
-                </button>
-             </div>
-
              {/* AVATAR PICKER */}
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm">
                 <div className="flex items-center justify-between mb-6">
@@ -383,7 +402,7 @@ const App: React.FC = () => {
                     {userAvatar}
                   </div>
                   <div className="flex-1">
-                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300 leading-relaxed">Choose an emoji that represents you. This will be seen by your partner in their widget.</p>
+                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300 leading-relaxed">Choose an emoji that represents you in the shared widget.</p>
                   </div>
                 </div>
 
@@ -404,7 +423,7 @@ const App: React.FC = () => {
 
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm space-y-6">
                 <div className="space-y-4">
-                   <h3 className="text-lg font-black dark:text-white">Profile</h3>
+                   <h3 className="text-lg font-black dark:text-white">Identity</h3>
                    <div className="space-y-2">
                      <span className="text-[10px] font-black uppercase text-slate-400 dark:text-slate-600 ml-2">Display Name</span>
                      <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
@@ -416,26 +435,36 @@ const App: React.FC = () => {
                 </div>
              </div>
 
+             {/* PARTNER SYNC SECTION */}
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm space-y-6">
                 <div className="flex items-center justify-between">
                     <h3 className="text-lg font-black dark:text-white">Partner Sync</h3>
-                    {!partnerState && <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl shadow-lg active:scale-95 transition-all">Join Room</button>}
+                    {!partnerState && <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl shadow-lg active:scale-95 transition-all">Link Partner</button>}
                 </div>
                 {partnerState ? (
                     <div className="flex items-center justify-between p-5 rounded-[1.8rem] border-2 border-emerald-500 bg-emerald-50/30 dark:bg-emerald-900/30 animate-in fade-in slide-in-from-top-2">
                         <div className="flex items-center space-x-4">
                             <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl bg-emerald-500 text-white shadow-lg">{partnerState.avatar || '👨'}</div>
                             <div>
-                                <p className="font-black dark:text-white">{partnerState.name}</p>
-                                <p className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Linked & Syncing</p>
+                                <p className="font-black dark:text-white leading-none">{partnerState.name}</p>
+                                <p className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mt-1">Synced & Online</p>
                             </div>
                         </div>
-                        <button onClick={unlink} className="text-[10px] font-black text-rose-500 bg-rose-50 dark:bg-rose-900/30 px-3 py-1.5 rounded-lg active:scale-90 transition-all">Unlink</button>
+                        <button onClick={unlink} className="text-[10px] font-black text-rose-500 bg-rose-50 dark:bg-rose-900/30 px-3 py-1.5 rounded-lg active:scale-90 transition-all">Sever link</button>
                     </div>
                 ) : (
-                    <div className="p-10 text-center border-2 border-dashed dark:border-slate-800 rounded-[2rem]">
-                        <p className="text-slate-400 font-bold italic mb-2 text-xs uppercase tracking-widest">Share this Room Address</p>
-                        <p className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.2em]">{pairingCode}</p>
+                    <div className="p-10 text-center border-2 border-dashed dark:border-slate-800 rounded-[2rem] bg-slate-50/30 dark:bg-slate-950/30 relative overflow-hidden">
+                        <p className="text-slate-400 font-bold italic mb-3 text-xs uppercase tracking-widest">Your Personal Address</p>
+                        <div className="flex items-center justify-center space-x-4">
+                           <p className="text-4xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.2em]">{myRoomCode}</p>
+                           <button 
+                             onClick={regenerateMyCode} 
+                             title="Generate New Address"
+                             className="p-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/50 active:scale-90 transition-all"
+                           >
+                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                           </button>
+                        </div>
                     </div>
                 )}
              </div>
@@ -444,7 +473,7 @@ const App: React.FC = () => {
       </main>
 
       {/* Mobile Nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t dark:border-slate-800 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t dark:border-slate-800 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom">
         {['status', 'widget', 'chat', 'settings'].map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex flex-col items-center gap-1 transition-all relative ${activeTab === tab ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
             {tab === 'status' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>}
@@ -463,13 +492,13 @@ const App: React.FC = () => {
            <div className="bg-white dark:bg-slate-900 w-full max-sm rounded-[3rem] p-10 shadow-2xl">
               <div className="text-center mb-6">
                 <div className="w-20 h-20 bg-indigo-50 dark:bg-slate-800 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">🔗</div>
-                <h3 className="text-2xl font-black dark:text-white leading-tight">Link Partner</h3>
-                <p className="text-xs text-slate-400 mt-2 font-bold uppercase tracking-widest">Enter their room code</p>
+                <h3 className="text-2xl font-black dark:text-white leading-tight">Join Partner Room</h3>
+                <p className="text-xs text-slate-400 mt-2 font-bold uppercase tracking-widest">Enter their address to sync</p>
               </div>
-              <input autoFocus type="text" maxLength={6} placeholder="ABC123" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-black text-center text-3xl tracking-[0.2em] mb-6" />
+              <input autoFocus type="text" maxLength={6} placeholder="ABC123" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-black text-center text-3xl tracking-[0.2em] mb-6 shadow-inner" />
               <div className="flex gap-3">
                 <button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-black text-gray-400 uppercase tracking-widest text-xs">Cancel</button>
-                <button onClick={instantConnect} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg active:scale-95 transition-all uppercase tracking-widest text-xs">Connect</button>
+                <button onClick={instantConnect} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg active:scale-95 transition-all uppercase tracking-widest text-xs">Link Now</button>
               </div>
            </div>
         </div>
