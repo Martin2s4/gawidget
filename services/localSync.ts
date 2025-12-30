@@ -26,7 +26,25 @@ export const WELCOME_PHRASES = [
   "Is it snack time yet? 🍕",
   "Go get 'em, Tiger! 🐅",
   "You look great today, just sayin'. 😉",
-  "Time to make some memories. 📸"
+  "Time to make some memories. 📸",
+  "Did you miss me? Because I missed you. ❤️",
+  "System Status: 100% Awesome. 🚀",
+  "Prepare for extreme cuteness. 🥰",
+  "Oh look, the legend has arrived. 👑"
+];
+
+export const HUMAN_PARTNER_REPLIES = [
+  "Love that status! ❤️",
+  "Miss you! ✨",
+  "See you later? 😉",
+  "You're the best!",
+  "Haha exactly! 😂",
+  "Can't wait for our next sync.",
+  "Thinking about you too! 🔥",
+  "Just saw your status update! Nice icon choice. 😎",
+  "That looks fun! 🤩",
+  "Send snacks pls 🥨",
+  "Counting down the minutes until we meet! ⏳"
 ];
 
 export const getHumorousCaption = (activity: ActivityType, status: string, mood: string): string => {
