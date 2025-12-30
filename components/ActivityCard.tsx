@@ -18,13 +18,15 @@ export const ActivityCard: React.FC<ActivityCardProps> = ({
     <button
       onClick={onClick}
       className={`relative flex flex-col items-center justify-center p-4 rounded-2xl border-2 transition-all duration-200 hover:scale-105 active:scale-95 ${
-        isSelected ? 'border-indigo-500 ring-2 ring-indigo-200 ring-offset-2' : border
-      } ${color}`}
+        isSelected 
+          ? 'border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900 ring-offset-2 dark:ring-offset-slate-900' 
+          : `${border} dark:border-slate-800`
+      } ${color} ${isSelected ? '' : 'dark:bg-slate-800 dark:text-slate-400'}`}
     >
       <span className="text-3xl mb-2">{icon}</span>
-      <span className="text-xs font-semibold uppercase tracking-wider">{type}</span>
+      <span className="text-[10px] font-bold uppercase tracking-wider">{type}</span>
       {isSelected && (
-        <div className="absolute top-2 right-2 w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center">
+        <div className="absolute top-2 right-2 w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center shadow-sm">
           <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
           </svg>

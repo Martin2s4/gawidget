@@ -10,6 +10,11 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+    }
+  </script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -17,9 +22,9 @@
     }
     body {
       font-family: 'Inter', sans-serif;
-      background-color: #f8fafc;
       -webkit-tap-highlight-color: transparent;
       user-select: none;
+      transition: background-color 0.3s ease, color 0.3s ease;
     }
     .widget-container {
       perspective: 1000px;
@@ -44,6 +49,9 @@
     .chat-scrollbar::-webkit-scrollbar-thumb:hover {
       background: #c7d2fe; /* indigo-200 */
     }
+    .dark .chat-scrollbar::-webkit-scrollbar-thumb {
+      background: #312e81; /* indigo-900 */
+    }
   </style>
   <script>
     // Safety shim for environments expecting Node.js 'process' globals
@@ -61,15 +69,8 @@
 }
 </script>
 </head>
-<body>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
   <div id="root"></div>
   <script type="module" src="index.tsx"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
-      });
-    }
-  </script>
 </body>
 </html>

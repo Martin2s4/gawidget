@@ -7,7 +7,7 @@ import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 
 // Peer-to-Peer Sync Channel (Shared across browser tabs/windows)
-const syncChannel = new BroadcastChannel('partnersync_realtime_hub_v2');
+const syncChannel = new BroadcastChannel('partnersync_v4_stable');
 
 const App: React.FC = () => {
   // --- Core Identity & Persistent State ---
@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [userGender, setUserGender] = useState<Gender>(() => (localStorage.getItem('user_gender') as Gender) || 'male');
   const [pairingCode, setPairingCode] = useState(() => localStorage.getItem('my_pairing_code') || Math.random().toString(36).substring(2, 5).toUpperCase() + Math.floor(Math.random() * 900 + 100));
   const [isOnboarded, setIsOnboarded] = useState(() => localStorage.getItem('is_onboarded') === 'true');
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
   // --- Connection & Messaging State ---
   const [partnerState, setPartnerState] = useState<UserState | null>(() => {
@@ -56,8 +57,17 @@ const App: React.FC = () => {
     localStorage.setItem('my_state', JSON.stringify(myState));
     localStorage.setItem('partner_state', JSON.stringify(partnerState));
     localStorage.setItem('chat_history', JSON.stringify(messages));
-  }, [myState, partnerState, messages, userName, userGender, isOnboarded, pairingCode]);
+    localStorage.setItem('theme', darkMode ? 'dark' : 'light');
+    
+    // Apply Dark Mode class to <html>
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [myState, partnerState, messages, userName, userGender, isOnboarded, pairingCode, darkMode]);
 
+  // Sync Engine Listener
   useEffect(() => {
     setWelcomeText(WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)]);
 
@@ -82,11 +92,19 @@ const App: React.FC = () => {
           setMessages([]);
           break;
         case 'PEER_HANDSHAKE_INIT':
-          // EXTREMELY IMPORTANT: Someone entered our code!
-          // 1. Send them our current status so they see us immediately
-          syncChannel.postMessage({ type: 'PEER_STATUS_UPDATE', payload: myState, senderId: userId, targetCode: pairingCode });
-          // 2. We now have a partner session active
-          console.log("Handshake received! Connection established.");
+          // EXTREMELY IMPORTANT: Someone just entered our code!
+          setPartnerState(payload);
+          // Send them our profile immediately so they can save us back
+          syncChannel.postMessage({ 
+            type: 'PEER_HANDSHAKE_RESPONSE', 
+            payload: myState, 
+            senderId: userId, 
+            targetCode: pairingCode 
+          });
+          break;
+        case 'PEER_HANDSHAKE_RESPONSE':
+          // This is the reply from the person we just joined
+          setPartnerState(payload);
           break;
       }
     };
@@ -165,41 +183,45 @@ const App: React.FC = () => {
 
   const performOneWaySync = () => {
     if (!partnerCodeInput) return;
+    const targetRoom = partnerCodeInput.trim().toUpperCase();
     setIsSyncing(true);
     
+    // Set our room to the target
+    setPairingCode(targetRoom);
+    
     setTimeout(() => {
-      // Switch our room to the partner's code
-      setPairingCode(partnerCodeInput);
       setIsSyncing(false);
       setShowAddPartnerModal(false);
       
-      // Shout into the room to see if anyone is there
-      syncChannel.postMessage({ type: 'PEER_HANDSHAKE_INIT', senderId: userId, targetCode: partnerCodeInput });
-      
-      // Also send our status immediately so they see us if they are already listening
-      syncChannel.postMessage({ type: 'PEER_STATUS_UPDATE', payload: myState, senderId: userId, targetCode: partnerCodeInput });
+      // Shout into the room
+      syncChannel.postMessage({ 
+        type: 'PEER_HANDSHAKE_INIT', 
+        payload: myState, 
+        senderId: userId, 
+        targetCode: targetRoom 
+      });
     }, 800);
   };
 
   if (!isOnboarded) {
     return (
-      <div className="min-h-screen bg-indigo-600 flex items-center justify-center p-8">
-        <div className="bg-white rounded-[3.5rem] w-full max-w-sm p-10 shadow-2xl animate-in fade-in zoom-in-95 duration-700">
+      <div className="min-h-screen bg-indigo-600 dark:bg-indigo-950 flex items-center justify-center p-8 transition-colors duration-500">
+        <div className="bg-white dark:bg-slate-900 rounded-[3.5rem] w-full max-w-sm p-10 shadow-2xl animate-in fade-in zoom-in-95 duration-700">
           <div className="text-center mb-10">
-            <div className="w-24 h-24 bg-indigo-50 rounded-[2.2rem] flex items-center justify-center text-5xl mx-auto mb-4">🛸</div>
-            <h1 className="text-4xl font-black text-gray-900 tracking-tight leading-none">PartnerSync</h1>
+            <div className="w-24 h-24 bg-indigo-50 dark:bg-slate-800 rounded-[2.2rem] flex items-center justify-center text-5xl mx-auto mb-4">🛸</div>
+            <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight leading-none">PartnerSync</h1>
             <p className="text-slate-400 font-bold mt-2 text-xs uppercase tracking-widest">Connect with your human</p>
           </div>
           <div className="space-y-6">
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Screen Name</label>
-              <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none font-bold text-lg" />
+              <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-700 outline-none font-bold text-lg" />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Gender Style</label>
               <div className="grid grid-cols-2 gap-3">
-                <button onClick={() => setUserGender('male')} className={`py-4 rounded-2xl border-2 font-bold transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>👨 Male</button>
-                <button onClick={() => setUserGender('female')} className={`py-4 rounded-2xl border-2 font-bold transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>👩 Female</button>
+                <button onClick={() => setUserGender('male')} className={`py-4 rounded-2xl border-2 font-bold transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300' : 'border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400'}`}>👨 Male</button>
+                <button onClick={() => setUserGender('female')} className={`py-4 rounded-2xl border-2 font-bold transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300' : 'border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400'}`}>👩 Female</button>
               </div>
             </div>
             <button onClick={() => { if(userName) setIsOnboarded(true); }} className="w-full py-5 bg-indigo-600 text-white rounded-[1.8rem] font-black text-xl shadow-xl active:scale-95 transition-all mt-4">Start Linking</button>
@@ -210,22 +232,22 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 overflow-x-hidden">
+    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 dark:bg-slate-950 transition-colors duration-500 overflow-x-hidden">
       {/* Desktop Navigation */}
-      <nav className="hidden md:flex flex-col w-24 bg-white border-r border-slate-100 py-10 items-center space-y-8 sticky top-0 h-screen">
+      <nav className="hidden md:flex flex-col w-24 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-slate-800 py-10 items-center space-y-8 sticky top-0 h-screen">
         <div className="w-14 h-14 bg-indigo-600 rounded-[1.2rem] flex items-center justify-center text-white font-black text-2xl shadow-lg">P</div>
         <div className="flex-1 flex flex-col space-y-6">
-          <button onClick={() => setActiveTab('status')} className={`p-4 rounded-2xl transition-all ${activeTab === 'status' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
+          <button onClick={() => setActiveTab('status')} className={`p-4 rounded-2xl transition-all ${activeTab === 'status' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
           </button>
-          <button onClick={() => setActiveTab('widget')} className={`p-4 rounded-2xl transition-all ${activeTab === 'widget' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
+          <button onClick={() => setActiveTab('widget')} className={`p-4 rounded-2xl transition-all ${activeTab === 'widget' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>
           </button>
-          <button onClick={() => setActiveTab('chat')} className={`p-4 rounded-2xl transition-all relative ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
+          <button onClick={() => setActiveTab('chat')} className={`p-4 rounded-2xl transition-all relative ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-             {partnerState && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></div>}
+             {partnerState && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900"></div>}
           </button>
-          <button onClick={() => setActiveTab('settings')} className={`p-4 rounded-2xl transition-all ${activeTab === 'settings' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50'}`}>
+          <button onClick={() => setActiveTab('settings')} className={`p-4 rounded-2xl transition-all ${activeTab === 'settings' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           </button>
         </div>
@@ -234,21 +256,21 @@ const App: React.FC = () => {
       <main className="flex-1 max-w-4xl mx-auto p-6 md:p-12 pb-32 overflow-y-auto">
         {activeTab === 'status' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500">
-            <header className="flex items-center justify-between">
+            <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <h2 className="text-3xl font-black text-slate-900 leading-tight">Hey {userName}, {welcomeText}</h2>
+                <h2 className="text-3xl font-black text-slate-900 dark:text-white leading-tight">Hey {userName}, {welcomeText}</h2>
                 <div className="flex items-center space-x-3 mt-1 relative">
-                  <p className="text-slate-500 font-medium">Currently feeling:</p>
-                  <button onClick={() => setShowMoodDropdown(!showMoodDropdown)} className="flex items-center space-x-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm font-bold text-slate-700">
+                  <p className="text-slate-500 dark:text-slate-400 font-medium">Currently feeling:</p>
+                  <button onClick={() => setShowMoodDropdown(!showMoodDropdown)} className="flex items-center space-x-2 bg-white dark:bg-slate-800 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm font-bold text-slate-700 dark:text-slate-200 transition-colors">
                     <span>{myState.activity.mood}</span>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                   </button>
                   {showMoodDropdown && (
-                    <div className="absolute top-full left-0 mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 z-[100] p-2 animate-in zoom-in-95 duration-200">
+                    <div className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 z-[100] p-2 animate-in zoom-in-95 duration-200">
                       {MOODS.map(m => (
-                        <button key={m.label} onClick={() => handleMoodSelect(`${m.emoji} ${m.label}`)} className="flex items-center space-x-3 w-full p-3 hover:bg-indigo-50 rounded-xl transition-colors">
+                        <button key={m.label} onClick={() => handleMoodSelect(`${m.emoji} ${m.label}`)} className="flex items-center space-x-3 w-full p-3 hover:bg-indigo-50 dark:hover:bg-slate-700 rounded-xl transition-colors">
                           <span className="text-xl">{m.emoji}</span>
-                          <span className="font-bold text-slate-700 text-sm">{m.label}</span>
+                          <span className="font-bold text-slate-700 dark:text-slate-200 text-sm">{m.label}</span>
                         </button>
                       ))}
                     </div>
@@ -256,11 +278,11 @@ const App: React.FC = () => {
                 </div>
               </div>
             </header>
-            <div className="bg-indigo-600 p-8 rounded-[3rem] text-white shadow-2xl relative overflow-hidden group transition-all hover:scale-[1.01]">
+            <div className="bg-indigo-600 dark:bg-indigo-700 p-8 rounded-[3rem] text-white shadow-2xl relative overflow-hidden group transition-all hover:scale-[1.01]">
               <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-3 block">Daily Sync Vibe</span>
               <p className="text-2xl font-bold italic leading-snug">"{humorCaption}"</p>
             </div>
-            <div className="bg-white rounded-[3rem] p-8 border border-slate-100 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 rounded-[3rem] p-8 border border-slate-100 dark:border-slate-800 shadow-sm transition-colors">
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-4">
                 {ACTIVITIES.map(act => (
                   <ActivityCard key={act.type} {...act} isSelected={myState.activity.type === act.type} onClick={() => act.type === ActivityType.CUSTOM ? setShowCustomModal(true) : handleUpdate(act.type)} />
@@ -272,7 +294,7 @@ const App: React.FC = () => {
 
         {activeTab === 'widget' && (
           <div className="flex flex-col items-center justify-center min-h-[70vh] space-y-12 animate-in zoom-in-95 duration-500">
-            <div className="relative p-12 bg-slate-200/40 rounded-[5rem] shadow-inner border-2 border-slate-200/50">
+            <div className="relative p-12 bg-slate-200/40 dark:bg-slate-800/20 rounded-[5rem] shadow-inner border-2 border-slate-200/50 dark:border-slate-800/50 transition-colors">
                 <WidgetView 
                   userA={myState} 
                   userB={partnerState || { id: 'none', name: 'Wait...', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Not linked', mood: '😴 Waiting' } }} 
@@ -282,9 +304,9 @@ const App: React.FC = () => {
             </div>
             <div className="text-center space-y-4">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] max-w-xs leading-loose">
-                  Your code: <span className="text-indigo-600 font-black px-1">{pairingCode}</span>
+                  Your code: <span className="text-indigo-600 dark:text-indigo-400 font-black px-1">{pairingCode}</span>
                 </p>
-                <p className="text-[10px] text-slate-300 font-medium italic">Open this app in another tab to link both sessions instantly.</p>
+                <p className="text-[10px] text-slate-300 dark:text-slate-500 font-medium italic">Enter this code on another device/tab to link instantly.</p>
             </div>
           </div>
         )}
@@ -292,35 +314,35 @@ const App: React.FC = () => {
         {activeTab === 'chat' && (
           <div className="flex flex-col h-[75vh] animate-in slide-in-from-bottom-5 duration-500">
              {partnerState ? (
-               <div className="flex-1 bg-white rounded-[3rem] border border-slate-100 shadow-sm flex flex-col overflow-hidden">
-                <div className="px-8 py-5 border-b border-slate-50 flex items-center justify-between bg-white">
+               <div className="flex-1 bg-white dark:bg-slate-900 rounded-[3rem] border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden transition-colors">
+                <div className="px-8 py-5 border-b border-slate-50 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
                   <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xl shadow-inner border-2 border-white">
+                    <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-xl shadow-inner border-2 border-white dark:border-slate-800">
                       {partnerState.gender === 'female' ? '👩' : '👨'}
                     </div>
                     <div>
-                      <h4 className="text-sm font-black text-slate-800">{partnerState.name}</h4>
+                      <h4 className="text-sm font-black text-slate-800 dark:text-slate-100">{partnerState.name}</h4>
                       <div className="flex items-center space-x-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Linked</span>
                       </div>
                     </div>
                   </div>
-                  <button onClick={clearChat} className="p-2 text-slate-200 hover:text-rose-500 transition-colors">
+                  <button onClick={clearChat} className="p-2 text-slate-200 hover:text-rose-500 dark:text-slate-700 transition-colors">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar bg-slate-50/20">
+                <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar bg-slate-50/20 dark:bg-slate-950/20">
                    {messages.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-4">
+                      <div className="h-full flex flex-col items-center justify-center text-slate-300 dark:text-slate-700 space-y-4">
                         <div className="text-4xl opacity-20">💬</div>
                         <p className="italic font-medium">Say hello to {partnerState.name}!</p>
                       </div>
                    ) : (
                       messages.map(msg => (
                         <div key={msg.id} className={`flex ${msg.senderId === userId ? 'justify-end' : 'justify-start'}`}>
-                           <div className={`max-w-[80%] px-5 py-3 rounded-[1.8rem] text-sm font-semibold shadow-sm ${msg.senderId === userId ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'}`}>
+                           <div className={`max-w-[80%] px-5 py-3 rounded-[1.8rem] text-sm font-semibold shadow-sm ${msg.senderId === userId ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-tl-none border border-slate-100 dark:border-slate-700'}`}>
                               {msg.text}
                               <div className="text-[8px] mt-1 opacity-50 block uppercase tracking-widest">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                            </div>
@@ -329,16 +351,16 @@ const App: React.FC = () => {
                    )}
                    {isPartnerTyping && (
                      <div className="flex justify-start">
-                        <div className="bg-white border border-slate-100 px-4 py-2 rounded-2xl rounded-tl-none flex items-center space-x-1">
-                          <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce"></div>
-                          <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce [animation-delay:0.2s]"></div>
-                          <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+                        <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 px-4 py-2 rounded-2xl rounded-tl-none flex items-center space-x-1">
+                          <div className="w-1.5 h-1.5 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce"></div>
+                          <div className="w-1.5 h-1.5 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce [animation-delay:0.2s]"></div>
+                          <div className="w-1.5 h-1.5 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce [animation-delay:0.4s]"></div>
                         </div>
                      </div>
                    )}
                    <div ref={chatEndRef} />
                 </div>
-                <div className="p-6 bg-white border-t border-slate-50">
+                <div className="p-6 bg-white dark:bg-slate-900 border-t border-slate-50 dark:border-slate-800">
                   <div className="flex space-x-3">
                     <input 
                       type="text" 
@@ -348,17 +370,17 @@ const App: React.FC = () => {
                       onBlur={() => broadcastTyping(false)}
                       onChange={e => { setChatText(e.target.value); if(!e.target.value) broadcastTyping(false); }} 
                       onKeyDown={e => e.key === 'Enter' && sendMessage()} 
-                      className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" 
+                      className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold transition-all" 
                     />
-                    <button onClick={sendMessage} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black active:scale-95 transition-all shadow-lg shadow-indigo-100">Send</button>
+                    <button onClick={sendMessage} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black active:scale-95 transition-all shadow-lg shadow-indigo-100 dark:shadow-none">Send</button>
                   </div>
                 </div>
                </div>
              ) : (
-               <div className="flex-1 flex flex-col items-center justify-center bg-white rounded-[3rem] p-12 border border-slate-100 shadow-sm text-center">
-                  <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center text-5xl mb-6">🔒</div>
-                  <h3 className="text-2xl font-black text-slate-900 mb-2">Connect to Chat</h3>
-                  <p className="text-slate-500 max-w-xs mb-8">Share your code or enter your partner's to enable real-time messaging.</p>
+               <div className="flex-1 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-[3rem] p-12 border border-slate-100 dark:border-slate-800 shadow-sm text-center transition-colors">
+                  <div className="w-24 h-24 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center text-5xl mb-6">🔒</div>
+                  <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">Connect to Chat</h3>
+                  <p className="text-slate-500 dark:text-slate-400 max-w-xs mb-8">Share your code or enter your partner's to enable real-time messaging.</p>
                   <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl">Link Session</button>
                </div>
              )}
@@ -367,46 +389,61 @@ const App: React.FC = () => {
 
         {activeTab === 'settings' && (
           <div className="max-w-xl mx-auto space-y-8 animate-in slide-in-from-right-4 duration-500">
-             <h2 className="text-4xl font-black text-slate-900">Hub</h2>
-             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
+             <h2 className="text-4xl font-black text-slate-900 dark:text-white">Hub</h2>
+             
+             {/* Profile & Theme */}
+             <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8 transition-colors">
                 <div className="space-y-4">
-                   <h3 className="text-lg font-black text-slate-800 ml-1">My Identity</h3>
-                   <div className="space-y-2">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Display Name</label>
-                      <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
+                   <div className="flex items-center justify-between">
+                     <h3 className="text-lg font-black text-slate-800 dark:text-slate-100 ml-1">My Identity</h3>
+                     <button 
+                        onClick={() => setDarkMode(!darkMode)}
+                        className="flex items-center space-x-2 bg-slate-50 dark:bg-slate-800 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 transition-all active:scale-95"
+                     >
+                        <span className="text-sm font-black text-slate-600 dark:text-slate-300 uppercase tracking-widest">{darkMode ? 'Dark' : 'Light'}</span>
+                        <span className="text-lg">{darkMode ? '🌙' : '☀️'}</span>
+                     </button>
                    </div>
+                   
                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Gender Style</label>
+                      <label className="text-[10px] font-black text-gray-400 dark:text-slate-500 uppercase tracking-widest ml-1">Display Name</label>
+                      <input type="text" placeholder="Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold transition-all" />
+                   </div>
+                   
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 dark:text-slate-500 uppercase tracking-widest ml-1">Gender Style</label>
                       <div className="grid grid-cols-2 gap-3">
-                        <button onClick={() => setUserGender('male')} className={`py-3 rounded-2xl border-2 font-bold transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-50 bg-slate-50 text-slate-400'}`}>👨 Male</button>
-                        <button onClick={() => setUserGender('female')} className={`py-3 rounded-2xl border-2 font-bold transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>👩 Female</button>
+                        <button onClick={() => setUserGender('male')} className={`py-3 rounded-2xl border-2 font-bold transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'border-slate-50 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400'}`}>👨 Male</button>
+                        <button onClick={() => setUserGender('female')} className={`py-3 rounded-2xl border-2 font-bold transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400'}`}>👩 Female</button>
                       </div>
                    </div>
-                   <div className="bg-slate-50 p-6 rounded-3xl">
-                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">My Current Code</p>
-                    <div className="flex items-center justify-between bg-white px-5 py-3 rounded-2xl border border-slate-200">
-                       <code className="text-xl font-black text-indigo-600 tracking-widest font-mono">{pairingCode}</code>
-                       <button onClick={() => { navigator.clipboard.writeText(pairingCode); alert('Code copied!'); }} className="text-indigo-500 font-bold text-sm hover:underline">Copy</button>
+                   
+                   <div className="bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl transition-colors">
+                    <p className="text-[10px] font-black text-gray-400 dark:text-slate-500 uppercase tracking-widest mb-2">My Current Code</p>
+                    <div className="flex items-center justify-between bg-white dark:bg-slate-900 px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700">
+                       <code className="text-xl font-black text-indigo-600 dark:text-indigo-400 tracking-widest font-mono">{pairingCode}</code>
+                       <button onClick={() => { navigator.clipboard.writeText(pairingCode); alert('Code copied!'); }} className="text-indigo-500 dark:text-indigo-400 font-bold text-sm hover:underline">Copy</button>
                     </div>
                   </div>
                 </div>
              </div>
 
-             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
+             {/* Partner Status */}
+             <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800 shadow-sm space-y-6 transition-colors">
                 <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-black text-slate-800 ml-1">Partner Status</h3>
+                    <h3 className="text-lg font-black text-slate-800 dark:text-slate-100 ml-1">Partner Status</h3>
                     <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-xl shadow-sm">Sync Code</button>
                 </div>
                 
                 {partnerState ? (
-                    <div className="flex items-center justify-between p-5 rounded-[1.8rem] border-2 border-indigo-500 bg-indigo-50/30 transition-all">
+                    <div className="flex items-center justify-between p-5 rounded-[1.8rem] border-2 border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20 transition-all">
                         <div className="flex items-center space-x-4">
                             <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl bg-indigo-500 text-white shadow-lg">
                                 {partnerState.gender === 'female' ? '👩' : '👨'}
                             </div>
                             <div>
-                                <p className="font-black text-slate-800 text-lg">{partnerState.name}</p>
-                                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">Active Connection</p>
+                                <p className="font-black text-slate-800 dark:text-slate-100 text-lg">{partnerState.name}</p>
+                                <p className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-widest">Active Connection</p>
                             </div>
                         </div>
                         <button 
@@ -416,73 +453,74 @@ const App: React.FC = () => {
                                 setPairingCode(Math.random().toString(36).substring(2, 5).toUpperCase() + "99");
                               }
                             }}
-                            className="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 px-3 py-1.5 rounded-lg hover:bg-rose-100 transition-colors"
+                            className="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 dark:bg-rose-900/20 px-3 py-1.5 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-colors"
                         >
                             Unlink
                         </button>
                     </div>
                 ) : (
-                    <div className="p-10 text-center border-2 border-dashed border-slate-200 rounded-[2rem]">
-                        <p className="text-slate-400 font-medium">Waiting for your partner on code {pairingCode}...</p>
+                    <div className="p-10 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-[2rem] transition-colors">
+                        <p className="text-slate-400 dark:text-slate-600 font-medium">Waiting for your partner on code {pairingCode}...</p>
                     </div>
                 )}
              </div>
 
              <div className="pt-4 flex justify-between items-center px-4">
                <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-rose-400 text-xs font-bold hover:underline">Reset Data</button>
-               <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em] opacity-80 uppercase">v2.1 Realtime Sync</span>
+               <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em] opacity-80">v3.5 Realtime Sync</span>
              </div>
           </div>
         )}
       </main>
 
       {/* Mobile Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-3xl border-t border-slate-100 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom">
-        <button onClick={() => setActiveTab('status')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'status' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-3xl border-t border-slate-100 dark:border-slate-800 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom transition-colors">
+        <button onClick={() => setActiveTab('status')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'status' ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
           <span className="text-[9px] font-black uppercase tracking-widest">Home</span>
         </button>
-        <button onClick={() => setActiveTab('widget')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'widget' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
+        <button onClick={() => setActiveTab('widget')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'widget' ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>
           <span className="text-[9px] font-black uppercase tracking-widest">Widget</span>
         </button>
-        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center space-y-1 transition-all relative ${activeTab === 'chat' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
+        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center space-y-1 transition-all relative ${activeTab === 'chat' ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
           <span className="text-[9px] font-black uppercase tracking-widest">Chat</span>
-          {partnerState && <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white"></div>}
+          {partnerState && <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white dark:border-slate-900"></div>}
         </button>
-        <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'settings' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}>
+        <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 transition-all ${activeTab === 'settings' ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
           <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          <span className="text-[9px] font-black uppercase tracking-widest">More</span>
+          <span className="text-[9px] font-black uppercase tracking-widest">Hub</span>
         </button>
       </nav>
 
+      {/* Modals */}
       {showAddPartnerModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300">
-           <div className="bg-white w-full max-sm rounded-[3rem] p-10 shadow-2xl scale-in duration-300">
-              <div className="text-center mb-6"><div className="w-20 h-20 bg-indigo-50 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">🤝</div><h3 className="text-2xl font-black text-slate-900 leading-tight">Sync Partner</h3></div>
+        <div className="fixed inset-0 bg-black/40 dark:bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300">
+           <div className="bg-white dark:bg-slate-900 w-full max-sm rounded-[3rem] p-10 shadow-2xl scale-in duration-300">
+              <div className="text-center mb-6"><div className="w-20 h-20 bg-indigo-50 dark:bg-slate-800 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">🤝</div><h3 className="text-2xl font-black text-slate-900 dark:text-white leading-tight">Sync Partner</h3></div>
               <div className="space-y-4 mb-6">
-                <input autoFocus type="text" maxLength={6} placeholder="Enter Code" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none rounded-2xl font-black text-center text-xl tracking-widest" />
+                <input autoFocus type="text" maxLength={6} placeholder="Enter Code" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-700 outline-none rounded-2xl font-black text-center text-xl tracking-widest transition-all" />
               </div>
-              <div className="flex space-x-3"><button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-bold text-gray-400">Cancel</button><button onClick={performOneWaySync} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">Link</button></div>
+              <div className="flex space-x-3"><button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-bold text-gray-400 dark:text-slate-500">Cancel</button><button onClick={performOneWaySync} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">Link</button></div>
            </div>
         </div>
       )}
 
       {showCustomModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300">
-           <div className="bg-white w-full max-w-sm rounded-[3rem] p-10 shadow-2xl scale-in duration-300">
-              <div className="text-center mb-8"><div className="w-20 h-20 bg-indigo-50 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">✨</div><h3 className="text-2xl font-black text-slate-900 leading-tight">Custom Status</h3></div>
-              <input autoFocus type="text" maxLength={20} placeholder="What's up?" value={customInputValue} onChange={e => setCustomInputValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && customInputValue && handleUpdate(ActivityType.CUSTOM, customInputValue)} className="w-full p-5 bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white outline-none rounded-2xl font-bold text-center text-lg mb-6" />
-              <div className="flex space-x-3"><button onClick={() => setShowCustomModal(false)} className="flex-1 py-4 font-bold text-gray-400">Cancel</button><button onClick={() => handleUpdate(ActivityType.CUSTOM, customInputValue)} disabled={!customInputValue.trim()} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black">Post</button></div>
+        <div className="fixed inset-0 bg-black/40 dark:bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300">
+           <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[3rem] p-10 shadow-2xl scale-in duration-300">
+              <div className="text-center mb-8"><div className="w-20 h-20 bg-indigo-50 dark:bg-slate-800 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">✨</div><h3 className="text-2xl font-black text-slate-900 dark:text-white leading-tight">Custom Status</h3></div>
+              <input autoFocus type="text" maxLength={20} placeholder="What's up?" value={customInputValue} onChange={e => setCustomInputValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && customInputValue && handleUpdate(ActivityType.CUSTOM, customInputValue)} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-700 outline-none rounded-2xl font-bold text-center text-lg mb-6 transition-all" />
+              <div className="flex space-x-3"><button onClick={() => setShowCustomModal(false)} className="flex-1 py-4 font-bold text-gray-400 dark:text-slate-500">Cancel</button><button onClick={() => handleUpdate(ActivityType.CUSTOM, customInputValue)} disabled={!customInputValue.trim()} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black">Post</button></div>
            </div>
         </div>
       )}
 
       {isSyncing && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-white px-6 py-3 rounded-full shadow-2xl border border-indigo-100 flex items-center space-x-3 z-[100] animate-in slide-in-from-top-4 duration-300">
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-white dark:bg-slate-900 px-6 py-3 rounded-full shadow-2xl border border-indigo-100 dark:border-indigo-900 flex items-center space-x-3 z-[100] animate-in slide-in-from-top-4 duration-300">
           <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <span className="text-sm font-black text-indigo-600 uppercase tracking-widest uppercase tracking-widest">Handshaking...</span>
+          <span className="text-sm font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Handshaking...</span>
         </div>
       )}
     </div>
