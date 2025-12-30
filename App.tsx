@@ -6,16 +6,25 @@ import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 
-// Single Channel for all cross-tab communication
-const syncChannel = new BroadcastChannel('partnersync_v7_instant');
+// Global Broadcast Channel for P2P Simulation
+const syncChannel = new BroadcastChannel('partnersync_v9_instant');
 
 const App: React.FC = () => {
   // --- User Identity ---
   const [userId] = useState(() => localStorage.getItem('user_id') || Math.random().toString(36).substring(2, 9));
   const [userName, setUserName] = useState(() => localStorage.getItem('user_name') || '');
   const [userGender, setUserGender] = useState<Gender>(() => (localStorage.getItem('user_gender') as Gender) || 'male');
-  const [userAvatar, setUserAvatar] = useState(() => localStorage.getItem('user_avatar') || '');
-  const [pairingCode, setPairingCode] = useState(() => localStorage.getItem('my_pairing_code') || (Math.random().toString(36).substring(2, 5).toUpperCase() + "00"));
+  const [userAvatar, setUserAvatar] = useState(() => localStorage.getItem('user_avatar') || '👨');
+  
+  // Unique 6-character Alphanumeric Room Code
+  const [pairingCode, setPairingCode] = useState(() => {
+    const saved = localStorage.getItem('my_pairing_code');
+    if (saved) return saved;
+    const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    localStorage.setItem('my_pairing_code', newCode);
+    return newCode;
+  });
+
   const [isOnboarded, setIsOnboarded] = useState(() => localStorage.getItem('is_onboarded') === 'true');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
@@ -36,7 +45,6 @@ const App: React.FC = () => {
   // --- UI Control ---
   const [activeTab, setActiveTab] = useState<'status' | 'widget' | 'chat' | 'settings'>('status');
   const [welcomeText, setWelcomeText] = useState('');
-  const [isLinking, setIsLinking] = useState(false);
   const [humorCaption, setHumorCaption] = useState('Sync engine ready.');
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customInputValue, setCustomInputValue] = useState('');
@@ -48,8 +56,6 @@ const App: React.FC = () => {
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  // Ref for the current pairing code to ensure sync listeners always have the latest "room"
   const roomRef = useRef(pairingCode);
 
   // --- Persistence & Theme Logic ---
@@ -59,7 +65,6 @@ const App: React.FC = () => {
     localStorage.setItem('user_name', userName);
     localStorage.setItem('user_gender', userGender);
     localStorage.setItem('user_avatar', userAvatar);
-    localStorage.setItem('my_pairing_code', pairingCode);
     localStorage.setItem('is_onboarded', isOnboarded.toString());
     localStorage.setItem('my_state', JSON.stringify(myState));
     localStorage.setItem('partner_state', JSON.stringify(partnerState));
@@ -73,40 +78,42 @@ const App: React.FC = () => {
     }
   }, [myState, partnerState, messages, userName, userGender, userAvatar, isOnboarded, pairingCode, darkMode, userId]);
 
-  // --- INSTANT SYNC ENGINE ---
+  // --- INSTANT P2P SYNC ENGINE ---
   useEffect(() => {
     setWelcomeText(WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)]);
 
     const handleMessage = (event: MessageEvent) => {
       const { type, payload, senderId, targetCode } = event.data;
       
-      // 1. Filter out self-sent messages and messages meant for other "rooms"
-      if (senderId === userId) return;
+      // Basic cross-tab security
+      if (senderId === userId) return; 
       if (targetCode !== roomRef.current) return;
 
       switch (type) {
-        case 'SYNC_STATE':
-          // We received someone's profile in our room. Update partner and optionally sync back.
+        case 'P2P_HANDSHAKE':
           setPartnerState(payload);
-          // If they just joined, they might need our state. We reply with our profile.
-          if (event.data.isHandshake) {
+          // If we received a handshake, we send one back immediately to "fuse" the connection
+          if (event.data.isInitial) {
             syncChannel.postMessage({
-              type: 'SYNC_STATE',
+              type: 'P2P_HANDSHAKE',
               payload: myState,
               senderId: userId,
               targetCode: roomRef.current,
-              isHandshake: false // Regular update reply
+              isInitial: false
             });
           }
           break;
-        case 'SYNC_MSG':
+        case 'P2P_UPDATE':
+          setPartnerState(payload);
+          break;
+        case 'P2P_MSG':
           setMessages(prev => [...prev, payload]);
           break;
-        case 'SYNC_TYPING':
+        case 'P2P_TYPING':
           setIsPartnerTyping(payload);
           break;
-        case 'SYNC_CLEAR':
-          setMessages([]);
+        case 'P2P_UNLINK':
+          setPartnerState(null);
           break;
       }
     };
@@ -120,14 +127,8 @@ const App: React.FC = () => {
   }, [messages, activeTab, isPartnerTyping]);
 
   // --- Actions ---
-  const broadcastMyState = (state: UserState, isHandshake = false) => {
-    syncChannel.postMessage({
-      type: 'SYNC_STATE',
-      payload: state,
-      senderId: userId,
-      targetCode: pairingCode,
-      isHandshake
-    });
+  const broadcast = (type: string, payload: any, extra = {}) => {
+    syncChannel.postMessage({ type, payload, senderId: userId, targetCode: pairingCode, ...extra });
   };
 
   const handleActivityUpdate = async (type: ActivityType, customText?: string) => {
@@ -157,7 +158,7 @@ const App: React.FC = () => {
     setMyState(updated);
     setHumorCaption(caption);
     setShowCustomModal(false);
-    broadcastMyState(updated);
+    broadcast('P2P_UPDATE', updated);
   };
 
   const handleAvatarChange = (emoji: string) => {
@@ -165,14 +166,14 @@ const App: React.FC = () => {
     const updated = { ...myState, avatar: emoji };
     setMyState(updated);
     setShowAvatarPicker(false);
-    broadcastMyState(updated);
+    broadcast('P2P_UPDATE', updated);
   };
 
   const updateMood = (moodStr: string) => {
     const updated = { ...myState, activity: { ...myState.activity, mood: moodStr, timestamp: Date.now() } };
     setMyState(updated);
     setShowMoodDropdown(false);
-    broadcastMyState(updated);
+    broadcast('P2P_UPDATE', updated);
   };
 
   const sendText = () => {
@@ -180,41 +181,36 @@ const App: React.FC = () => {
     const msg: Message = { id: Math.random().toString(36), senderId: userId, text: chatText, timestamp: Date.now() };
     setMessages(prev => [...prev, msg]);
     setChatText('');
-    syncChannel.postMessage({ type: 'SYNC_MSG', payload: msg, senderId: userId, targetCode: pairingCode });
+    broadcast('P2P_MSG', msg);
   };
 
-  const broadcastTyping = (state: boolean) => {
-    syncChannel.postMessage({ type: 'SYNC_TYPING', payload: state, senderId: userId, targetCode: pairingCode });
-  };
-
-  // --- THE NEW INSTANT LINKING ---
-  const instantLink = () => {
+  // --- THE INSTANT LINKING ACTION ---
+  const instantConnect = () => {
     const code = partnerCodeInput.trim().toUpperCase();
     if (!code) return;
 
-    // 1. Join room immediately
+    // Join room & broadcast presence
     setPairingCode(code);
     roomRef.current = code;
-    
-    // 2. Broadcast our presence immediately
-    syncChannel.postMessage({
-      type: 'SYNC_STATE',
-      payload: myState,
-      senderId: userId,
-      targetCode: code,
-      isHandshake: true // Signals that the other person should reply with their profile
-    });
+    broadcast('P2P_HANDSHAKE', myState, { isInitial: true });
 
-    // 3. UI Cleanup
     setShowAddPartnerModal(false);
     setPartnerCodeInput('');
     setActiveTab('widget');
   };
 
+  const unlink = () => {
+    broadcast('P2P_UNLINK', null);
+    setPartnerState(null);
+    const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setPairingCode(newCode);
+    roomRef.current = newCode;
+  };
+
   if (!isOnboarded) {
     return (
       <div className="min-h-screen bg-indigo-600 dark:bg-slate-950 flex items-center justify-center p-8 transition-all duration-500">
-        <div className="bg-white dark:bg-slate-900 rounded-[3.5rem] w-full max-w-sm p-10 shadow-2xl animate-in fade-in zoom-in-95">
+        <div className="bg-white dark:bg-slate-900 rounded-[3.5rem] w-full max-sm p-10 shadow-2xl animate-in fade-in zoom-in-95">
           <div className="text-center mb-10">
             <div className="w-24 h-24 bg-indigo-50 dark:bg-slate-800 rounded-[2.2rem] flex items-center justify-center text-5xl mx-auto mb-4">🛰️</div>
             <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight leading-none">PartnerSync</h1>
@@ -235,19 +231,15 @@ const App: React.FC = () => {
       <nav className="hidden md:flex flex-col w-24 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-slate-800 py-10 items-center space-y-8 sticky top-0 h-screen">
         <div className="w-14 h-14 bg-indigo-600 rounded-[1.2rem] flex items-center justify-center text-white font-black text-2xl">S</div>
         <div className="flex-1 flex flex-col space-y-6">
-          <button onClick={() => setActiveTab('status')} className={`p-4 rounded-2xl transition-all ${activeTab === 'status' ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
-            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
-          </button>
-          <button onClick={() => setActiveTab('widget')} className={`p-4 rounded-2xl transition-all ${activeTab === 'widget' ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
-            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>
-          </button>
-          <button onClick={() => setActiveTab('chat')} className={`p-4 rounded-2xl transition-all relative ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
-            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-            {partnerState && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900"></div>}
-          </button>
-          <button onClick={() => setActiveTab('settings')} className={`p-4 rounded-2xl transition-all ${activeTab === 'settings' ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
-            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          </button>
+          {['status', 'widget', 'chat', 'settings'].map((tab) => (
+            <button key={tab} onClick={() => setActiveTab(tab as any)} className={`p-4 rounded-2xl transition-all relative ${activeTab === tab ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+               {tab === 'status' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>}
+               {tab === 'widget' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>}
+               {tab === 'chat' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>}
+               {tab === 'settings' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
+               {tab === 'chat' && partnerState && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900"></div>}
+            </button>
+          ))}
         </div>
       </nav>
 
@@ -255,10 +247,10 @@ const App: React.FC = () => {
       <main className="flex-1 max-w-4xl mx-auto p-6 md:p-12 pb-32 overflow-y-auto">
         {activeTab === 'status' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-5">
-            <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <header className="flex items-center justify-between gap-4">
               <div>
-                <h2 className="text-3xl font-black text-slate-900 dark:text-white">{userName}, {welcomeText}</h2>
-                <div className="flex items-center space-x-3 mt-1 relative">
+                <h2 className="text-3xl font-black text-slate-900 dark:text-white leading-none mb-2">{userName}, {welcomeText}</h2>
+                <div className="flex items-center space-x-3 relative">
                   <p className="text-slate-500 dark:text-slate-400 font-medium">I feel:</p>
                   <button onClick={() => setShowMoodDropdown(!showMoodDropdown)} className="bg-white dark:bg-slate-800 px-4 py-2 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm font-bold text-slate-700 dark:text-slate-200">
                     {myState.activity.mood}
@@ -275,17 +267,21 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="text-4xl bg-white dark:bg-slate-800 w-16 h-16 rounded-2xl shadow-sm border dark:border-slate-700 flex items-center justify-center">
-                  {userAvatar || (userGender === 'female' ? '👩' : '👨')}
-                </div>
-                <button onClick={() => setActiveTab('settings')} className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400 hover:underline">Change</button>
-              </div>
+              
+              {/* THEME TOGGLE (Visible on Home) */}
+              <button 
+                onClick={() => setDarkMode(!darkMode)}
+                className="w-14 h-14 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border dark:border-slate-700 flex items-center justify-center text-2xl transition-all hover:scale-105 active:scale-95"
+              >
+                {darkMode ? '🌙' : '☀️'}
+              </button>
             </header>
+
             <div className="bg-indigo-600 p-8 rounded-[3rem] text-white shadow-2xl">
-              <span className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-2 block">Caption</span>
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-2 block">Vibe Check</span>
               <p className="text-2xl font-bold italic">"{humorCaption}"</p>
             </div>
+
             <div className="bg-white dark:bg-slate-900 rounded-[3rem] p-8 border border-slate-100 dark:border-slate-800">
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-4">
                 {ACTIVITIES.map(act => (
@@ -300,13 +296,13 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-12 animate-in zoom-in-95">
             <WidgetView 
               userA={myState} 
-              userB={partnerState || { id: 'none', name: 'No Partner', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Unlinked', mood: '😴 Idle' } }} 
+              userB={partnerState || { id: 'none', name: 'No Partner', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Disconnected', mood: '😴 Offline' } }} 
               onActivityChange={handleActivityUpdate} 
               onMoodChange={updateMood} 
             />
             <div className="text-center">
-              <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest">Room Code: <span className="text-indigo-600 dark:text-indigo-400 text-lg">{pairingCode}</span></p>
-              <p className="text-[10px] text-slate-300 mt-2">Enter this code on your partner's device for instant sync.</p>
+              <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest">Your Room Address: <span className="text-indigo-600 dark:text-indigo-400 text-lg font-black">{pairingCode}</span></p>
+              <p className="text-[10px] text-slate-300 dark:text-slate-500 mt-2">Entering this on a partner device will link you instantly.</p>
             </div>
           </div>
         )}
@@ -315,35 +311,39 @@ const App: React.FC = () => {
           <div className="flex flex-col h-[70vh] animate-in slide-in-from-bottom-5">
              {partnerState ? (
                <div className="flex-1 bg-white dark:bg-slate-900 rounded-[3rem] border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden">
-                <div className="px-8 py-5 border-b dark:border-slate-800 flex items-center justify-between">
+                <div className="px-8 py-5 border-b dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-950/50">
                   <div className="flex items-center space-x-3">
                     <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center text-xl shadow-inner border-2 border-white dark:border-slate-800">
-                      {partnerState.avatar || (partnerState.gender === 'female' ? '👩' : '👨')}
+                      {partnerState.avatar || '👨'}
                     </div>
-                    <h4 className="text-sm font-black dark:text-white">{partnerState.name}</h4>
+                    <div>
+                      <h4 className="text-sm font-black dark:text-white leading-none">{partnerState.name}</h4>
+                      <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">Connected</span>
+                    </div>
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar bg-slate-50/20 dark:bg-slate-950/20">
                    {messages.map(msg => (
                      <div key={msg.id} className={`flex ${msg.senderId === userId ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[80%] px-5 py-3 rounded-[1.8rem] text-sm font-semibold ${msg.senderId === userId ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-tl-none border dark:border-slate-700 shadow-sm'}`}>
+                        <div className={`max-w-[80%] px-5 py-3 rounded-[1.8rem] text-sm font-semibold shadow-sm ${msg.senderId === userId ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-tl-none border dark:border-slate-700'}`}>
                            {msg.text}
                         </div>
                      </div>
                    ))}
-                   {isPartnerTyping && <div className="text-[10px] font-bold text-slate-400 italic ml-2">Typing...</div>}
+                   {isPartnerTyping && <div className="text-[10px] font-black text-slate-400 italic ml-2">Partner is typing...</div>}
                    <div ref={chatEndRef} />
                 </div>
                 <div className="p-6 bg-white dark:bg-slate-900 border-t dark:border-slate-800 flex gap-3">
-                  <input type="text" placeholder="Send vibes..." value={chatText} onFocus={() => broadcastTyping(true)} onBlur={() => broadcastTyping(false)} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendText()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white outline-none font-bold" />
-                  <button onClick={sendText} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black">Send</button>
+                  <input type="text" placeholder="Type a message..." value={chatText} onFocus={() => broadcast('P2P_TYPING', true)} onBlur={() => broadcast('P2P_TYPING', false)} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendText()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white outline-none font-bold" />
+                  <button onClick={sendText} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black active:scale-95 transition-all">Send</button>
                 </div>
                </div>
              ) : (
                <div className="flex-1 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-[3rem] p-12 border dark:border-slate-800 text-center">
-                  <div className="w-20 h-20 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center text-4xl mb-6">🔒</div>
-                  <h3 className="text-xl font-black dark:text-white">Connect to Sync Chat</h3>
-                  <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black mt-6 shadow-xl">Link in Hub</button>
+                  <div className="w-24 h-24 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center text-5xl mb-6 shadow-inner">🔒</div>
+                  <h3 className="text-2xl font-black dark:text-white mb-2">Connect to Chat</h3>
+                  <p className="text-slate-400 text-sm max-w-[200px]">Link with a partner in the Hub to start sharing messages.</p>
+                  <button onClick={() => setActiveTab('settings')} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black mt-8 shadow-xl hover:shadow-indigo-500/20 active:scale-95 transition-all">Go to Hub</button>
                </div>
              )}
           </div>
@@ -353,7 +353,7 @@ const App: React.FC = () => {
           <div className="max-w-xl mx-auto space-y-8 animate-in slide-in-from-right-4">
              <h2 className="text-4xl font-black text-slate-900 dark:text-white">Hub</h2>
              
-             {/* THEME TOGGLE */}
+             {/* THEME TOGGLE (Hub Version) */}
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm flex items-center justify-between">
                 <div>
                   <h3 className="font-black text-slate-800 dark:text-slate-100">Interface Mode</h3>
@@ -372,18 +372,18 @@ const App: React.FC = () => {
              {/* AVATAR PICKER */}
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm">
                 <div className="flex items-center justify-between mb-6">
-                   <h3 className="text-lg font-black dark:text-white">Persona</h3>
-                   <button onClick={() => setShowAvatarPicker(!showAvatarPicker)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl">
-                    {showAvatarPicker ? 'Close' : 'Change Avatar'}
+                   <h3 className="text-lg font-black dark:text-white">Your Persona</h3>
+                   <button onClick={() => setShowAvatarPicker(!showAvatarPicker)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl active:scale-95 transition-all">
+                    {showAvatarPicker ? 'Done' : 'Edit Avatar'}
                    </button>
                 </div>
                 
                 <div className="flex items-center space-x-6">
                   <div className="w-24 h-24 bg-slate-50 dark:bg-slate-800 rounded-3xl flex items-center justify-center text-6xl shadow-inner border dark:border-slate-700">
-                    {userAvatar || (userGender === 'female' ? '👩' : '👨')}
+                    {userAvatar}
                   </div>
                   <div className="flex-1">
-                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300">Choose an emoji to represent you on the shared widget.</p>
+                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300 leading-relaxed">Choose an emoji that represents you. This will be seen by your partner in their widget.</p>
                   </div>
                 </div>
 
@@ -393,7 +393,7 @@ const App: React.FC = () => {
                       <button 
                         key={emoji} 
                         onClick={() => handleAvatarChange(emoji)}
-                        className={`text-2xl p-2 rounded-xl hover:bg-white dark:hover:bg-slate-700 transition-all ${userAvatar === emoji ? 'bg-white dark:bg-slate-700 shadow-md scale-110' : ''}`}
+                        className={`text-2xl p-2 rounded-xl hover:bg-white dark:hover:bg-slate-700 transition-all ${userAvatar === emoji ? 'bg-white dark:bg-slate-700 shadow-md scale-110 ring-2 ring-indigo-500' : ''}`}
                       >
                         {emoji}
                       </button>
@@ -404,11 +404,14 @@ const App: React.FC = () => {
 
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm space-y-6">
                 <div className="space-y-4">
-                   <h3 className="text-lg font-black dark:text-white">Identity</h3>
-                   <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
+                   <h3 className="text-lg font-black dark:text-white">Profile</h3>
+                   <div className="space-y-2">
+                     <span className="text-[10px] font-black uppercase text-slate-400 dark:text-slate-600 ml-2">Display Name</span>
+                     <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-4 rounded-2xl bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold" />
+                   </div>
                    <div className="grid grid-cols-2 gap-3">
-                     <button onClick={() => setUserGender('male')} className={`py-3 rounded-2xl border-2 font-bold ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👨 Male Style</button>
-                     <button onClick={() => setUserGender('female')} className={`py-3 rounded-2xl border-2 font-bold ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👩 Female Style</button>
+                     <button onClick={() => setUserGender('male')} className={`py-3 rounded-2xl border-2 font-black text-xs uppercase tracking-widest ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👨 Male Style</button>
+                     <button onClick={() => setUserGender('female')} className={`py-3 rounded-2xl border-2 font-black text-xs uppercase tracking-widest ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👩 Female Style</button>
                    </div>
                 </div>
              </div>
@@ -416,22 +419,23 @@ const App: React.FC = () => {
              <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border dark:border-slate-800 shadow-sm space-y-6">
                 <div className="flex items-center justify-between">
                     <h3 className="text-lg font-black dark:text-white">Partner Sync</h3>
-                    <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl shadow-lg active:scale-95 transition-all">Join Room</button>
+                    {!partnerState && <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl shadow-lg active:scale-95 transition-all">Join Room</button>}
                 </div>
                 {partnerState ? (
-                    <div className="flex items-center justify-between p-5 rounded-[1.8rem] border-2 border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/30">
+                    <div className="flex items-center justify-between p-5 rounded-[1.8rem] border-2 border-emerald-500 bg-emerald-50/30 dark:bg-emerald-900/30 animate-in fade-in slide-in-from-top-2">
                         <div className="flex items-center space-x-4">
-                            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl bg-indigo-500 text-white">{partnerState.avatar || (partnerState.gender === 'female' ? '👩' : '👨')}</div>
+                            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl bg-emerald-500 text-white shadow-lg">{partnerState.avatar || '👨'}</div>
                             <div>
                                 <p className="font-black dark:text-white">{partnerState.name}</p>
-                                <p className="text-[10px] font-bold text-indigo-500 uppercase">Synced</p>
+                                <p className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Linked & Syncing</p>
                             </div>
                         </div>
-                        <button onClick={() => { setPartnerState(null); setPairingCode(Math.random().toString(36).substring(2, 5).toUpperCase() + "RST"); }} className="text-[10px] font-black text-rose-500 bg-rose-50 dark:bg-rose-900/30 px-3 py-1.5 rounded-lg">Sever Link</button>
+                        <button onClick={unlink} className="text-[10px] font-black text-rose-500 bg-rose-50 dark:bg-rose-900/30 px-3 py-1.5 rounded-lg active:scale-90 transition-all">Unlink</button>
                     </div>
                 ) : (
                     <div className="p-10 text-center border-2 border-dashed dark:border-slate-800 rounded-[2rem]">
-                        <p className="text-slate-400 font-medium italic">Current Room: {pairingCode}</p>
+                        <p className="text-slate-400 font-bold italic mb-2 text-xs uppercase tracking-widest">Share this Room Address</p>
+                        <p className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.2em]">{pairingCode}</p>
                     </div>
                 )}
              </div>
@@ -440,55 +444,49 @@ const App: React.FC = () => {
       </main>
 
       {/* Mobile Nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t dark:border-slate-800 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom">
-        <button onClick={() => setActiveTab('status')} className={`flex flex-col items-center gap-1 ${activeTab === 'status' ? 'text-indigo-600' : 'text-slate-300 dark:text-slate-600'}`}>
-          <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
-          <span className="text-[9px] font-black uppercase">Home</span>
-        </button>
-        <button onClick={() => setActiveTab('widget')} className={`flex flex-col items-center gap-1 ${activeTab === 'widget' ? 'text-indigo-600' : 'text-slate-300 dark:text-slate-600'}`}>
-          <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>
-          <span className="text-[9px] font-black uppercase">Widget</span>
-        </button>
-        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center gap-1 relative ${activeTab === 'chat' ? 'text-indigo-600' : 'text-slate-300 dark:text-slate-600'}`}>
-          <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-          <span className="text-[9px] font-black uppercase">Chat</span>
-          {partnerState && <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white dark:border-slate-900"></div>}
-        </button>
-        <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center gap-1 ${activeTab === 'settings' ? 'text-indigo-600' : 'text-slate-300 dark:text-slate-600'}`}>
-          <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          <span className="text-[9px] font-black uppercase">Hub</span>
-        </button>
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t dark:border-slate-800 px-6 py-4 flex items-center justify-around z-50 md:hidden safe-bottom shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
+        {['status', 'widget', 'chat', 'settings'].map((tab) => (
+          <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex flex-col items-center gap-1 transition-all relative ${activeTab === tab ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
+            {tab === 'status' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>}
+            {tab === 'widget' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>}
+            {tab === 'chat' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>}
+            {tab === 'settings' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
+            <span className="text-[8px] font-black uppercase tracking-wider">{tab}</span>
+            {tab === 'chat' && partnerState && <div className="absolute top-0 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full border border-white dark:border-slate-900 shadow-sm"></div>}
+          </button>
+        ))}
       </nav>
 
       {/* Linking Modal */}
       {showAddPartnerModal && (
-        <div className="fixed inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in">
+        <div className="fixed inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-md z-[200] flex items-center justify-center p-6 animate-in fade-in">
            <div className="bg-white dark:bg-slate-900 w-full max-sm rounded-[3rem] p-10 shadow-2xl">
               <div className="text-center mb-6">
                 <div className="w-20 h-20 bg-indigo-50 dark:bg-slate-800 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">🔗</div>
-                <h3 className="text-2xl font-black dark:text-white leading-tight">Join Room</h3>
+                <h3 className="text-2xl font-black dark:text-white leading-tight">Link Partner</h3>
+                <p className="text-xs text-slate-400 mt-2 font-bold uppercase tracking-widest">Enter their room code</p>
               </div>
-              <input autoFocus type="text" maxLength={6} placeholder="Enter Room Code" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-black text-center text-xl tracking-widest mb-6" />
+              <input autoFocus type="text" maxLength={6} placeholder="ABC123" value={partnerCodeInput} onChange={e => setPartnerCodeInput(e.target.value.toUpperCase())} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-black text-center text-3xl tracking-[0.2em] mb-6" />
               <div className="flex gap-3">
-                <button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-bold text-gray-400">Cancel</button>
-                <button onClick={instantLink} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">Connect</button>
+                <button onClick={() => setShowAddPartnerModal(false)} className="flex-1 py-4 font-black text-gray-400 uppercase tracking-widest text-xs">Cancel</button>
+                <button onClick={instantConnect} disabled={!partnerCodeInput} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg active:scale-95 transition-all uppercase tracking-widest text-xs">Connect</button>
               </div>
            </div>
         </div>
       )}
 
-      {/* Custom Text Modal */}
+      {/* Custom Status Modal */}
       {showCustomModal && (
-        <div className="fixed inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in">
+        <div className="fixed inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-md z-[200] flex items-center justify-center p-6 animate-in fade-in">
            <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[3rem] p-10 shadow-2xl">
               <div className="text-center mb-8">
                 <div className="w-20 h-20 bg-indigo-50 dark:bg-slate-800 rounded-[1.8rem] flex items-center justify-center text-4xl mx-auto mb-4">✨</div>
                 <h3 className="text-2xl font-black dark:text-white">Custom Status</h3>
               </div>
-              <input autoFocus type="text" maxLength={20} value={customInputValue} onChange={e => setCustomInputValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && customInputValue && handleActivityUpdate(ActivityType.CUSTOM, customInputValue)} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-bold text-center text-lg mb-6" />
+              <input autoFocus type="text" maxLength={20} value={customInputValue} onChange={e => setCustomInputValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && customInputValue && handleActivityUpdate(ActivityType.CUSTOM, customInputValue)} className="w-full p-5 bg-gray-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl font-bold text-center text-lg mb-6 shadow-inner" />
               <div className="flex gap-3">
-                <button onClick={() => setShowCustomModal(false)} className="flex-1 py-4 font-bold text-gray-400">Cancel</button>
-                <button onClick={() => handleActivityUpdate(ActivityType.CUSTOM, customInputValue)} disabled={!customInputValue.trim()} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black">Post</button>
+                <button onClick={() => setShowCustomModal(false)} className="flex-1 py-4 font-black text-gray-400 uppercase tracking-widest text-xs">Cancel</button>
+                <button onClick={() => handleActivityUpdate(ActivityType.CUSTOM, customInputValue)} disabled={!customInputValue.trim()} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs">Post</button>
               </div>
            </div>
         </div>
