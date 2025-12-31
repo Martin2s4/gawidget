@@ -24,11 +24,11 @@ export interface WeatherInfo {
 
 export interface UserActivity {
   type: ActivityType;
-  customText?: string;
+  customText?: string | null;
   statusText: string;
   mood: string;
   timestamp: number;
-  weather?: WeatherInfo;
+  weather?: WeatherInfo | null;
 }
 
 export interface Message {

@@ -116,8 +116,20 @@ const App: React.FC = () => {
     // Debounce slightly or just write on change. Firestore handles it well.
     const userRef = doc(db, 'users', userId);
     
-    // We add 'roomCode' to the document so partners can search for us by code
-    const payload = { ...myState, roomCode: myRoomCode, lastUpdated: Date.now() };
+    // Sanitize payload to replace undefined with null for Firestore compatibility
+    // Specifically handle optional fields in UserActivity
+    const activityPayload = {
+        ...myState.activity,
+        customText: myState.activity.customText ?? null,
+        weather: myState.activity.weather ?? null
+    };
+
+    const payload = { 
+        ...myState, 
+        activity: activityPayload,
+        roomCode: myRoomCode, 
+        lastUpdated: Date.now() 
+    };
     
     setDoc(userRef, payload, { merge: true }).catch(err => console.error("Sync failed:", err));
   }, [myState, myRoomCode, userId, isAuthReady]);
@@ -263,7 +275,8 @@ const App: React.FC = () => {
     const optimisticActivity = { 
         ...myState.activity, 
         type, 
-        customText, 
+        // Ensure undefined values become null for Firestore
+        customText: customText ?? null, 
         timestamp, 
         mood: suggestedMood,
         statusText: 'Updated now'

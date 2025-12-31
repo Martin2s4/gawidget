@@ -19,7 +19,10 @@ const UserPanel: React.FC<{
 }> = ({ user, isRight, isMe, onActivityChange, onMoodChange }) => {
   const [showPicker, setShowPicker] = useState(false);
   const activityDef = ACTIVITIES.find(a => a.type === user.activity.type) || ACTIVITIES[0];
-  const char = user.avatar || (user.gender === 'female' ? activityDef.charF : activityDef.charM);
+  
+  // Use the activity icon (e.g. 💼, 💻) instead of the user avatar/gendered char
+  // to match the image shown on the selection card.
+  const char = activityDef.icon;
   
   return (
     <div className={`flex flex-col h-full w-full p-5 transition-all duration-500 relative ${isRight ? 'bg-indigo-50/40 dark:bg-indigo-900/20' : 'bg-white dark:bg-slate-900'}`}>
