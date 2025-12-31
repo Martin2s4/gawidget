@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ActivityType, UserState, Gender, Message, PartnerRecord } from './types';
+import { ActivityType, UserState, Gender, Message, PartnerRecord, UserActivity } from './types';
 import { ACTIVITIES, MOODS, AVATARS, INITIAL_ACTIVITY, ACTIVITY_DEFAULT_MOODS } from './constants';
 import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
@@ -25,6 +25,7 @@ const App: React.FC = () => {
 
   const [isOnboarded, setIsOnboarded] = useState(() => localStorage.getItem('is_onboarded') === 'true');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => localStorage.getItem('notifications_enabled') === 'true');
 
   // --- Multi-Partner State ---
   const [partnerIds, setPartnerIds] = useState<string[]>(() => {
@@ -43,7 +44,7 @@ const App: React.FC = () => {
   });
 
   // --- UI Control ---
-  const [activeTab, setActiveTab] = useState<'status' | 'widget' | 'chat' | 'settings'>('status');
+  const [activeTab, setActiveTab] = useState<'status' | 'chat' | 'settings'>('status');
   const [welcomeText, setWelcomeText] = useState('');
   const [humorCaption, setHumorCaption] = useState('Cloud sync active.');
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -63,6 +64,10 @@ const App: React.FC = () => {
   // NOTE: Typing indicators require more complex Firestore logic (presence), skipping for MVP to save writes
   const [typingPartnerIds] = useState<Set<string>>(new Set());
 
+  // --- Notification Refs ---
+  // Store previous states to detect changes and prevent notification spam on load
+  const prevPartnerStates = useRef<Record<string, UserActivity>>({});
+  const initialLoadTime = useRef(Date.now());
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // --- Persistence & Theme ---
@@ -77,10 +82,11 @@ const App: React.FC = () => {
     localStorage.setItem('active_partner_id', activePartnerId || '');
     localStorage.setItem('theme', darkMode ? 'dark' : 'light');
     localStorage.setItem('my_room_code', myRoomCode);
+    localStorage.setItem('notifications_enabled', notificationsEnabled.toString());
     
     if (darkMode) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
-  }, [myState, partnerIds, activePartnerId, userName, userGender, userAvatar, isOnboarded, myRoomCode, darkMode, userId]);
+  }, [myState, partnerIds, activePartnerId, userName, userGender, userAvatar, isOnboarded, myRoomCode, darkMode, userId, notificationsEnabled]);
 
   // --- PWA Install Prompt Listener ---
   useEffect(() => {
@@ -96,6 +102,53 @@ const App: React.FC = () => {
   useEffect(() => {
     setIsStandalone(window.matchMedia('(display-mode: standalone)').matches);
   }, []);
+
+  // --- Initial Weather Fetch ---
+  useEffect(() => {
+    if (!isOnboarded) return;
+    
+    // Fetch weather on mount
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const weather = await getRealWeather(pos.coords.latitude, pos.coords.longitude);
+      setMyState(prev => ({
+        ...prev,
+        activity: { ...prev.activity, weather }
+      }));
+    }, (err) => {
+      console.warn("Weather init failed (likely perms), using simulation", err);
+      const weather = getSimulatedWeather();
+      setMyState(prev => ({
+        ...prev,
+        activity: { ...prev.activity, weather }
+      }));
+    }, { timeout: 10000 });
+  }, [isOnboarded]);
+
+  // --- Utility: Notifications ---
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) {
+      alert("This browser does not support desktop notifications");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      setNotificationsEnabled(true);
+      new Notification("Notifications Enabled", { body: "You will now see updates from your partners!" });
+    }
+  };
+
+  const sendNotification = (title: string, options?: NotificationOptions) => {
+    if (notificationsEnabled && Notification.permission === "granted") {
+      // Only notify if the app is hidden OR we are notifying about something not currently in focus
+      if (document.visibilityState === 'hidden' || options?.tag === 'background-update') {
+        new Notification(title, {
+             icon: '/android-chrome-192x192.png',
+             badge: '/android-chrome-192x192.png',
+             ...options
+        });
+      }
+    }
+  };
 
   // --- FIREBASE AUTH & SYNC ENGINE ---
 
@@ -163,7 +216,7 @@ const App: React.FC = () => {
     return () => unsub();
   }, [userId, isAuthReady]);
 
-  // 2. Subscribe to Partners
+  // 2. Subscribe to Partners & NOTIFY Status Updates
   useEffect(() => {
     if (!db || !isAuthReady || partnerIds.length === 0) {
         if (partnerIds.length === 0) setPartners([]);
@@ -176,8 +229,31 @@ const App: React.FC = () => {
        return onSnapshot(doc(db, 'users', pid), (docSnap) => {
          if (docSnap.exists()) {
            const data = docSnap.data() as UserState & { roomCode: string };
-           setPartners(prev => {
-             const others = prev.filter(p => p.id !== pid);
+           
+           // --- Notification Logic ---
+           const prev = prevPartnerStates.current[pid];
+           const current = data.activity;
+           
+           // Only notify if we have a previous state to compare to (prevents initial load spam)
+           // AND the update is recent (within last 10 seconds to avoid stale updates on reconnect)
+           if (prev && (Date.now() - current.timestamp < 10000)) {
+               const hasChanged = prev.type !== current.type || prev.customText !== current.customText || prev.mood !== current.mood;
+               
+               if (hasChanged && notificationsEnabled) {
+                   const statusText = current.type === ActivityType.CUSTOM ? (current.customText || 'Something cool') : current.type;
+                   sendNotification(`${data.name} updated status`, {
+                       body: `Now: ${statusText} ${current.mood}`,
+                       tag: 'background-update'
+                   });
+               }
+           }
+           
+           // Update Ref
+           prevPartnerStates.current[pid] = current;
+           // --------------------------
+
+           setPartners(prevPartners => {
+             const others = prevPartners.filter(p => p.id !== pid);
              return [...others, { id: pid, roomCode: data.roomCode, state: data, lastSeen: Date.now() }];
            });
          }
@@ -187,9 +263,9 @@ const App: React.FC = () => {
     });
 
     return () => unsubs.forEach(unsub => unsub());
-  }, [partnerIds, isAuthReady]);
+  }, [partnerIds, isAuthReady, notificationsEnabled]);
 
-  // 3. Subscribe to Chat
+  // 3. Subscribe to Chat & NOTIFY Messages
   useEffect(() => {
     if (!db || !isAuthReady || !activePartnerId || activePartnerId.startsWith('local_')) return;
 
@@ -200,13 +276,39 @@ const App: React.FC = () => {
     const unsub = onSnapshot(q, (snapshot) => {
        const msgs: Message[] = [];
        snapshot.forEach(doc => msgs.push(doc.data() as Message));
+       
+       // --- Notification Logic ---
+       snapshot.docChanges().forEach((change) => {
+           if (change.type === "added") {
+               const newMsg = change.doc.data() as Message;
+               // Only notify if:
+               // 1. It's a new message (created after app load)
+               // 2. Sender is not me
+               // 3. Notifications enabled
+               // 4. Tab is not 'chat' OR document is hidden (user is not looking)
+               if (newMsg.timestamp > initialLoadTime.current && 
+                   newMsg.senderId !== userId && 
+                   notificationsEnabled &&
+                   (activeTab !== 'chat' || document.visibilityState === 'hidden')
+               ) {
+                   // Find sender name
+                   const sender = partners.find(p => p.id === newMsg.senderId)?.state.name || "Partner";
+                   sendNotification(sender, {
+                       body: newMsg.text,
+                       tag: 'message'
+                   });
+               }
+           }
+       });
+       // --------------------------
+
        setMessages(prev => ({ ...prev, [activePartnerId]: msgs }));
     }, (error) => {
       console.error("Chat sync error:", error);
     });
 
     return () => unsub();
-  }, [activePartnerId, userId, isAuthReady]);
+  }, [activePartnerId, userId, isAuthReady, notificationsEnabled, activeTab, partners]);
 
   useEffect(() => {
     setWelcomeText(WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)]);
@@ -489,10 +591,9 @@ const App: React.FC = () => {
       <nav className="hidden md:flex flex-col w-24 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-slate-800 py-10 items-center space-y-8 sticky top-0 h-screen">
         <div className="w-14 h-14 bg-indigo-600 rounded-[1.2rem] flex items-center justify-center text-white font-black text-2xl">S</div>
         <div className="flex-1 flex flex-col space-y-6">
-          {['status', 'widget', 'chat', 'settings'].map((tab) => (
+          {['status', 'chat', 'settings'].map((tab) => (
             <button key={tab} onClick={() => setActiveTab(tab as any)} className={`p-4 rounded-2xl transition-all relative ${activeTab === tab ? 'bg-indigo-600 text-white shadow-xl' : 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
                {tab === 'status' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>}
-               {tab === 'widget' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>}
                {tab === 'chat' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>}
                {tab === 'settings' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
                {tab === 'chat' && partners.length > 0 && <div className="absolute top-3 right-3 w-2 h-2 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900"></div>}
@@ -535,6 +636,38 @@ const App: React.FC = () => {
               <p className="text-2xl font-bold italic">"{humorCaption}"</p>
             </div>
 
+            {/* --- WIDGET SECTION --- */}
+            <div className="flex flex-col items-center justify-center space-y-6">
+                <div className="w-full flex items-center justify-center space-x-4">
+                   {partners.length > 0 ? (
+                     <div className="flex -space-x-4">
+                       {partners.map(p => (
+                         <button 
+                           key={p.id} 
+                           onClick={() => setActivePartnerId(p.id)}
+                           className={`w-14 h-14 rounded-full border-4 border-slate-50 dark:border-slate-950 text-2xl flex items-center justify-center transition-all ${activePartnerId === p.id ? 'scale-125 z-10 shadow-2xl ring-2 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950' : 'bg-white dark:bg-slate-800 grayscale opacity-40 hover:opacity-80'}`}
+                         >
+                           {p.state.avatar || '👨'}
+                         </button>
+                       ))}
+                     </div>
+                   ) : (
+                     <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-[0.2em]">Add a partner to sync</p>
+                   )}
+                </div>
+
+                <WidgetView 
+                  userA={myState} 
+                  userB={activePartner?.state || { id: 'none', name: 'Partner', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Disconnected', mood: '😴 Offline' } }} 
+                  onActivityChange={handleActivityUpdate} 
+                  onMoodChange={updateMood}
+                  showInstall={!isStandalone && !!deferredPrompt}
+                  onInstall={handleInstallClick}
+                  partnerOnline={partnerOnline}
+                />
+            </div>
+            {/* --- END WIDGET SECTION --- */}
+
             <div className="bg-white dark:bg-slate-900 rounded-[3rem] p-8 border border-slate-100 dark:border-slate-800">
                <div className="flex justify-between items-center mb-6 px-2">
                  <span className="text-sm font-black uppercase tracking-widest text-slate-400">Select Activity</span>
@@ -545,38 +678,6 @@ const App: React.FC = () => {
                 ))}
               </div>
             </div>
-          </div>
-        )}
-
-        {activeTab === 'widget' && (
-          <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8 animate-in zoom-in-95">
-            <div className="w-full flex items-center justify-center space-x-4 mb-4">
-               {partners.length > 0 ? (
-                 <div className="flex -space-x-4">
-                   {partners.map(p => (
-                     <button 
-                       key={p.id} 
-                       onClick={() => setActivePartnerId(p.id)}
-                       className={`w-14 h-14 rounded-full border-4 border-slate-50 dark:border-slate-950 text-2xl flex items-center justify-center transition-all ${activePartnerId === p.id ? 'scale-125 z-10 shadow-2xl ring-2 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950' : 'bg-white dark:bg-slate-800 grayscale opacity-40 hover:opacity-80'}`}
-                     >
-                       {p.state.avatar || '👨'}
-                     </button>
-                   ))}
-                 </div>
-               ) : (
-                 <p className="text-xs font-black text-slate-400 dark:text-slate-600 uppercase tracking-[0.2em]">Add a partner to sync</p>
-               )}
-            </div>
-
-            <WidgetView 
-              userA={myState} 
-              userB={activePartner?.state || { id: 'none', name: 'Partner', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Disconnected', mood: '😴 Offline' } }} 
-              onActivityChange={handleActivityUpdate} 
-              onMoodChange={updateMood}
-              showInstall={!isStandalone && !!deferredPrompt}
-              onInstall={handleInstallClick}
-              partnerOnline={partnerOnline}
-            />
           </div>
         )}
 
@@ -779,6 +880,22 @@ const App: React.FC = () => {
                     </button>
                 </div>
 
+                {/* Notifications Toggle */}
+                <div className="flex items-center justify-between pt-4 border-t dark:border-slate-800">
+                   <div>
+                       <h4 className="font-bold dark:text-white">Notifications</h4>
+                       <p className="text-[10px] font-black uppercase text-slate-400">Status & Messages</p>
+                   </div>
+                   <button 
+                      onClick={() => notificationsEnabled ? setNotificationsEnabled(false) : requestNotificationPermission()}
+                      className={`w-16 h-8 rounded-full transition-all relative p-1 ${notificationsEnabled ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                    >
+                      <div className={`w-6 h-6 rounded-full bg-white flex items-center justify-center shadow-md transition-transform duration-300 ${notificationsEnabled ? 'translate-x-8' : 'translate-x-0'}`}>
+                        {notificationsEnabled ? '🔔' : '🔕'}
+                      </div>
+                    </button>
+                </div>
+
                 <div className="pt-6 border-t dark:border-slate-800">
                     {!isStandalone && deferredPrompt && (
                          <div className="mt-2">
@@ -825,10 +942,9 @@ const App: React.FC = () => {
 
       {/* Mobile Nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-2xl border-t dark:border-slate-800 px-8 py-5 flex items-center justify-around z-50 md:hidden safe-bottom">
-        {['status', 'widget', 'chat', 'settings'].map((tab) => (
+        {['status', 'chat', 'settings'].map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex flex-col items-center gap-1.5 transition-all relative ${activeTab === tab ? 'text-indigo-600 scale-110' : 'text-slate-300 dark:text-slate-600'}`}>
             {tab === 'status' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>}
-            {tab === 'widget' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" /></svg>}
             {tab === 'chat' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>}
             {tab === 'settings' && <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
             <span className="text-[9px] font-black uppercase tracking-wider">{tab}</span>
