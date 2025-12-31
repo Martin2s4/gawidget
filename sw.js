@@ -1,5 +1,4 @@
-
-const CACHE_NAME = 'partnersync-v2';
+const CACHE_NAME = 'sync-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

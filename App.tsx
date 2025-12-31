@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { ActivityType, UserState, Gender, Message, PartnerRecord } from './types';
 import { ACTIVITIES, MOODS, AVATARS, INITIAL_ACTIVITY, ACTIVITY_DEFAULT_MOODS } from './constants';
@@ -6,7 +5,7 @@ import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 import { db, auth } from './services/firebase';
-import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 
 const App: React.FC = () => {
@@ -56,6 +55,7 @@ const App: React.FC = () => {
   const [chatText, setChatText] = useState('');
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isStandalone, setIsStandalone] = useState(false);
+  const [copied, setCopied] = useState(false);
   
   // Flag to ensure we don't try to sync until Auth is ready (fixes permission errors)
   const [isAuthReady, setIsAuthReady] = useState(false);
@@ -220,6 +220,12 @@ const App: React.FC = () => {
   const regenerateMyCode = () => {
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     setMyRoomCode(newCode);
+  };
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(myRoomCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const handleInstallClick = async () => {
@@ -416,6 +422,30 @@ const App: React.FC = () => {
     }
   };
 
+  const clearChat = async () => {
+    if (!activePartnerId || !db) return;
+    if (!window.confirm("🗑️ Delete entire chat history with this partner?")) return;
+
+    // Optimistic clear
+    setMessages(prev => ({
+      ...prev,
+      [activePartnerId]: []
+    }));
+
+    if (!activePartnerId.startsWith('local_')) {
+        const chatId = [userId, activePartnerId].sort().join('_');
+        try {
+            const msgsRef = collection(db, 'chats', chatId, 'messages');
+            const snap = await getDocs(msgsRef);
+            // Batch delete (or loop since batch limited to 500, but simple loop fine for now)
+            const batchPromises = snap.docs.map(d => deleteDoc(d.ref));
+            await Promise.all(batchPromises);
+        } catch(e) {
+            console.error("Error clearing cloud chat", e);
+        }
+    }
+  };
+
   const activePartner = partners.find(p => p.id === activePartnerId);
 
   // --- Render ---
@@ -426,7 +456,7 @@ const App: React.FC = () => {
         <div className="bg-white dark:bg-slate-900 rounded-[3.5rem] w-full max-w-sm p-10 shadow-2xl animate-in fade-in zoom-in-95">
           <div className="text-center mb-10">
             <div className="w-24 h-24 bg-indigo-50 dark:bg-slate-800 rounded-[2.2rem] flex items-center justify-center text-5xl mx-auto mb-4">🛰️</div>
-            <h1 className="text-4xl font-black text-slate-900 dark:text-white tracking-tight leading-none">PartnerSync</h1>
+            <h1 className="text-4xl font-black text-slate-900 dark:text-white tracking-tight leading-none">Sync</h1>
             <p className="text-slate-400 font-bold mt-2 text-xs uppercase tracking-widest">Setup Your Profile</p>
           </div>
           <div className="space-y-6">
@@ -577,6 +607,11 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   </div>
+                  
+                  {/* DELETE CHAT BUTTON */}
+                  <button onClick={clearChat} className="p-2 text-slate-400 hover:text-rose-500 transition-colors bg-white dark:bg-slate-800 rounded-xl shadow-sm border dark:border-slate-700" title="Clear Chat">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-4 p-8 chat-scrollbar bg-slate-50/10 dark:bg-slate-950/10">
                    {(messages[activePartnerId!] || []).map(msg => (
@@ -661,7 +696,22 @@ const App: React.FC = () => {
                 {/* YOUR CODE DISPLAY */}
                 <div className="bg-slate-50 dark:bg-slate-950 p-6 rounded-[2.5rem] flex flex-col items-center justify-center border-2 border-slate-100 dark:border-slate-800 relative overflow-hidden group">
                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-500 dark:text-indigo-400 mb-2">Share Your Room Code</p>
-                   <p className="text-4xl font-black text-slate-900 dark:text-white tracking-[0.2em] mb-3">{myRoomCode}</p>
+                   
+                   <div className="flex items-center gap-2 mb-3 z-10">
+                      <p className="text-4xl font-black text-slate-900 dark:text-white tracking-[0.2em]">{myRoomCode}</p>
+                      <button 
+                        onClick={handleCopyCode}
+                        className="p-2 rounded-xl text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all active:scale-95"
+                        title="Copy Code"
+                      >
+                        {copied ? (
+                          <span className="text-lg">✅</span> 
+                        ) : (
+                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        )}
+                      </button>
+                   </div>
+
                    <button onClick={regenerateMyCode} className="text-[10px] font-black uppercase text-slate-400 hover:text-indigo-500 transition-colors z-10">Rotate Address</button>
                    <div className="absolute inset-0 bg-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
                 </div>

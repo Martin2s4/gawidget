@@ -1,7 +1,6 @@
-
 {
-  "name": "PartnerSync Widget",
-  "short_name": "PartnerSync",
+  "name": "Sync Widget",
+  "short_name": "Sync",
   "description": "Real-time activity sharing widget for partners.",
   "start_url": "/",
   "display": "standalone",
