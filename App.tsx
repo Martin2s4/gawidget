@@ -6,7 +6,7 @@ import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 import { db, auth } from './services/firebase';
-import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 
 const App: React.FC = () => {
@@ -28,7 +28,6 @@ const App: React.FC = () => {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
   // --- Multi-Partner State ---
-  // We store IDs of partners locally, but their STATE comes from Firestore live listeners
   const [partnerIds, setPartnerIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('partner_ids_list');
     return saved ? JSON.parse(saved) : [];
@@ -55,10 +54,11 @@ const App: React.FC = () => {
   const [partnerCodeInput, setPartnerCodeInput] = useState('');
   const [showMoodDropdown, setShowMoodDropdown] = useState(false);
   const [chatText, setChatText] = useState('');
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
   
   // Flag to ensure we don't try to sync until Auth is ready (fixes permission errors)
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [firebaseError, setFirebaseError] = useState<string | null>(null);
   
   // NOTE: Typing indicators require more complex Firestore logic (presence), skipping for MVP to save writes
   const [typingPartnerIds] = useState<Set<string>>(new Set());
@@ -82,6 +82,20 @@ const App: React.FC = () => {
     else document.documentElement.classList.remove('dark');
   }, [myState, partnerIds, activePartnerId, userName, userGender, userAvatar, isOnboarded, myRoomCode, darkMode, userId]);
 
+  // --- PWA Install Prompt Listener ---
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      console.log("Install prompt captured");
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  useEffect(() => {
+    setIsStandalone(window.matchMedia('(display-mode: standalone)').matches);
+  }, []);
 
   // --- FIREBASE AUTH & SYNC ENGINE ---
 
@@ -95,23 +109,14 @@ const App: React.FC = () => {
       .then(() => {
         console.log("🔥 Authenticated anonymously");
         setIsAuthReady(true);
-        setFirebaseError(null);
       })
       .catch((err) => {
         console.error("Auth failed:", err);
-        // Handle specific configuration errors gracefully so the app doesn't crash
-        if (err.code === 'auth/configuration-not-found' || err.code === 'auth/operation-not-allowed') {
-            setFirebaseError("Enable 'Anonymous' Sign-in in Firebase Console > Authentication.");
-        } else {
-            setFirebaseError(err.message);
-        }
-        // We set ready to true anyway so app doesn't hang, but sync might fail if rules require auth
         setIsAuthReady(true); 
       });
   }, []);
 
   // 1. Publish Myself to Cloud
-  // We do NOT overwrite 'partners' here to avoid race conditions. We only set personal data.
   useEffect(() => {
     if (!db || !isAuthReady) return;
     const userRef = doc(db, 'users', userId);
@@ -128,15 +133,12 @@ const App: React.FC = () => {
         activity: activityPayload,
         roomCode: myRoomCode, 
         lastUpdated: Date.now() 
-        // We do NOT send 'partners' here, handled by addPartner/arrayUnion
     };
     
     setDoc(userRef, payload, { merge: true }).catch(err => console.error("Sync failed:", err));
   }, [myState, myRoomCode, userId, isAuthReady]);
 
   // 1.5 Listen to MYSELF for Incoming Connections
-  // If someone else adds me, my 'partners' array in Firestore will change. 
-  // This listener catches that and updates my local UI automatically.
   useEffect(() => {
     if (!db || !isAuthReady) return;
     
@@ -145,14 +147,10 @@ const App: React.FC = () => {
             const data = docSnap.data() as UserState;
             if (data.partners && Array.isArray(data.partners)) {
                 setPartnerIds(prev => {
-                    // Keep local bots (starting with local_) + Cloud partners
                     const localBots = prev.filter(id => id.startsWith('local_'));
                     const cloudPartners = data.partners || [];
-                    
-                    // Merge unique IDs
                     const merged = Array.from(new Set([...localBots, ...cloudPartners]));
                     
-                    // Simple check to avoid loop if nothing changed
                     if (merged.length !== prev.length || !merged.every(val => prev.includes(val))) {
                         return merged;
                     }
@@ -172,7 +170,6 @@ const App: React.FC = () => {
     }
 
     const unsubs = partnerIds.map(pid => {
-       // Skip listeners for local-only bots
        if (pid.startsWith('local_')) return () => {};
 
        return onSnapshot(doc(db, 'users', pid), (docSnap) => {
@@ -184,7 +181,7 @@ const App: React.FC = () => {
            });
          }
        }, (error) => {
-         console.warn(`Sync warning for ${pid} (likely permission issue):`, error);
+         console.warn(`Sync warning for ${pid}:`, error);
        });
     });
 
@@ -195,7 +192,6 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!db || !isAuthReady || !activePartnerId || activePartnerId.startsWith('local_')) return;
 
-    // Create a unique chat ID based on sorted user IDs (so A-B and B-A share the same chat)
     const chatId = [userId, activePartnerId].sort().join('_');
     const messagesRef = collection(db, 'chats', chatId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'asc'), limit(50));
@@ -224,78 +220,25 @@ const App: React.FC = () => {
   const regenerateMyCode = () => {
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     setMyRoomCode(newCode);
-    // The useEffect [myState, myRoomCode] will auto-sync this to Firestore
   };
 
-  const spawnTestPartner = async () => {
-    if (!db) {
-      alert("Database not connected.");
-      return;
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+        console.log("No install prompt available");
+        return;
     }
-    if (!isAuthReady) {
-      alert("Connecting to server... Please wait.");
-      return;
-    }
-    try {
-      const botId = "bot_test_01";
-      await setDoc(doc(db, "users", botId), {
-        id: botId,
-        name: "Cloud Bot 3000",
-        avatar: "☁️",
-        gender: "male",
-        roomCode: "TEST01",
-        lastUpdated: Date.now(),
-        activity: {
-          type: ActivityType.GAMING,
-          statusText: "Running cloud diagnostics",
-          mood: "🤖 Beep Boop",
-          timestamp: Date.now(),
-          weather: { temp: 20, condition: "Cloudy", icon: "☁️" }
-        },
-        partners: arrayUnion(userId) // Automatically add ME to the Bot's list
-      }, { merge: true });
-
-      // Automatically add Bot to MY list in Cloud
-      // This triggers the self-listener above to update the UI
-      const myRef = doc(db, 'users', userId);
-      await updateDoc(myRef, {
-          partners: arrayUnion(botId)
-      });
-
-      alert("✅ Cloud Bot Created & Linked! \n\nCheck your list.");
-    } catch (e: any) {
-      console.error("Failed to spawn bot:", e);
-      if (e.code === 'permission-denied') {
-          if (firebaseError) {
-             alert(`❌ Failed: Auth Config Missing\n\nReason: ${firebaseError}\n\nFix: Go to Firebase Console -> Authentication -> Sign-in method -> Enable Anonymous.`);
-          } else {
-             alert("❌ Failed: Permission Denied\n\nYour Firestore Rules are blocking this write.\n\nQuick Fix: Go to Firebase Console -> Firestore -> Rules -> Change to:\nallow read, write: if true;");
-          }
-      } else {
-          alert(`Error: ${e.message}\n\nCheck console for details.`);
-      }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
     }
   };
 
-  const spawnLocalPartner = () => {
-    const localId = "local_bot_" + Math.floor(Math.random() * 1000);
-    const localUser: UserState = {
-        id: localId,
-        name: "Offline Bot",
-        gender: "female",
-        avatar: "🤖",
-        activity: { ...INITIAL_ACTIVITY, type: ActivityType.CODING, statusText: "Simulating locally...", mood: "⚡ Fast" }
-    };
-    
-    // Manually inject into partners state, bypassing Firestore listeners for now
-    setPartners(prev => {
-        return [...prev, { id: localId, roomCode: "LOCAL", state: localUser, lastSeen: Date.now() }];
-    });
-    setActivePartnerId(localId);
-    if (!partnerIds.includes(localId)) {
-      setPartnerIds(prev => [...prev, localId]);
+  const handleClearData = () => {
+    if (window.confirm("⚠️ Clear all local data?\n\nThis will reset your profile and require you to set up your account again. This action cannot be undone.")) {
+      localStorage.clear();
+      window.location.reload();
     }
-    alert("✅ Local partner spawned! (Data is not synced to cloud, but you can test the UI)");
   };
 
   const handleActivityUpdate = (type: ActivityType, customText?: string) => {
@@ -306,7 +249,6 @@ const App: React.FC = () => {
     const optimisticActivity = { 
         ...myState.activity, 
         type, 
-        // Ensure undefined values become null for Firestore
         customText: customText ?? null, 
         timestamp, 
         mood: suggestedMood,
@@ -355,6 +297,20 @@ const App: React.FC = () => {
     setShowAvatarPicker(false);
   };
 
+  const handleGenderChange = (selectedGender: Gender) => {
+    // Auto-switch avatar based on selected gender
+    const newAvatar = selectedGender === 'male' ? '👨' : '👩';
+    setUserGender(selectedGender);
+    setUserAvatar(newAvatar);
+    
+    setMyState(prev => ({ 
+      ...prev, 
+      gender: selectedGender, 
+      avatar: newAvatar,
+      activity: { ...prev.activity, timestamp: Date.now() }
+    }));
+  };
+
   const handleNameBlur = () => {
     if (userName !== myState.name) {
       setMyState(prev => ({ 
@@ -380,14 +336,12 @@ const App: React.FC = () => {
       timestamp: Date.now() 
     };
     
-    // Optimistic UI update
     setMessages(prev => ({
       ...prev,
       [activePartnerId]: [...(prev[activePartnerId] || []), msg]
     }));
     setChatText('');
     
-    // Only send to cloud if not local bot
     if (!activePartnerId.startsWith('local_')) {
         const chatId = [userId, activePartnerId].sort().join('_');
         try {
@@ -402,7 +356,6 @@ const App: React.FC = () => {
     const code = partnerCodeInput.trim().toUpperCase();
     if (!code || code === myRoomCode || !db) return;
 
-    // Search for user with this code
     try {
       const q = query(collection(db, 'users'), where('roomCode', '==', code));
       const querySnapshot = await getDocs(q);
@@ -422,22 +375,15 @@ const App: React.FC = () => {
         return;
       }
 
-      // MUTUAL SYNC LOGIC
-      // 1. Add Partner to My List
       const myRef = doc(db, 'users', userId);
       await updateDoc(myRef, {
         partners: arrayUnion(foundPartnerId)
       });
 
-      // 2. Add Me to Partner's List
       const partnerRef = doc(db, 'users', foundPartnerId);
       await updateDoc(partnerRef, {
         partners: arrayUnion(userId)
       });
-
-      // Note: We do NOT need to manually setPartnerIds here.
-      // The 'Listen to MYSELF' useEffect will detect the change in 'partners' array
-      // and update the local state automatically.
 
       setActivePartnerId(foundPartnerId);
       setShowAddPartnerModal(false);
@@ -450,15 +396,29 @@ const App: React.FC = () => {
     }
   };
 
-  const removePartner = (id: string) => {
+  const removePartner = async (id: string) => {
+    if (!window.confirm("Permanently remove this partner from your list?")) return;
+
     setPartnerIds(prev => prev.filter(pid => pid !== id));
     setPartners(prev => prev.filter(p => p.id !== id));
     if (activePartnerId === id) setActivePartnerId(null);
+
+    // Also remove from cloud to prevent re-sync
+    if (db) {
+        try {
+            const myRef = doc(db, 'users', userId);
+            await updateDoc(myRef, {
+                partners: arrayRemove(id)
+            });
+        } catch (e) {
+            console.error("Error removing partner from cloud", e);
+        }
+    }
   };
 
   const activePartner = partners.find(p => p.id === activePartnerId);
 
-  // --- Render (Identical UI to previous version, just simpler logic) ---
+  // --- Render ---
 
   if (!isOnboarded) {
     return (
@@ -479,7 +439,19 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 dark:bg-slate-950 transition-colors duration-500 overflow-hidden">
+    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 dark:bg-slate-950 transition-colors duration-500 overflow-hidden relative">
+      
+      {/* --- FLOATING INSTALL BUTTON (BACKUP) --- */}
+      {!isStandalone && deferredPrompt && (
+         <button
+           onClick={handleInstallClick}
+           className="fixed bottom-24 right-6 z-[100] flex items-center gap-3 bg-indigo-600 text-white pl-5 pr-6 py-4 rounded-full shadow-2xl shadow-indigo-500/40 animate-bounce font-black uppercase tracking-widest text-xs border-2 border-white dark:border-slate-800 hover:scale-105 active:scale-95 transition-all"
+         >
+           <span className="text-xl">📲</span>
+           <span>Add Widget</span>
+         </button>
+      )}
+
       {/* Navigation Desktop */}
       <nav className="hidden md:flex flex-col w-24 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-slate-800 py-10 items-center space-y-8 sticky top-0 h-screen">
         <div className="w-14 h-14 bg-indigo-600 rounded-[1.2rem] flex items-center justify-center text-white font-black text-2xl">S</div>
@@ -567,14 +539,10 @@ const App: React.FC = () => {
               userA={myState} 
               userB={activePartner?.state || { id: 'none', name: 'Partner', gender: 'male', activity: { ...INITIAL_ACTIVITY, statusText: 'Disconnected', mood: '😴 Offline' } }} 
               onActivityChange={handleActivityUpdate} 
-              onMoodChange={updateMood} 
+              onMoodChange={updateMood}
+              showInstall={!isStandalone && !!deferredPrompt}
+              onInstall={handleInstallClick}
             />
-
-            <div className="text-center bg-white dark:bg-slate-900 p-8 rounded-[3rem] border dark:border-slate-800 shadow-xl w-full max-w-sm">
-               <p className="text-[10px] font-black uppercase tracking-[0.25em] text-indigo-500 dark:text-indigo-400 mb-3">Your Global Link</p>
-               <p className="text-4xl font-black text-slate-900 dark:text-white tracking-[0.2em]">{myRoomCode}</p>
-               <button onClick={regenerateMyCode} className="mt-4 text-[10px] font-black uppercase text-slate-400 hover:text-indigo-500 transition-colors">Rotate Address</button>
-            </div>
           </div>
         )}
 
@@ -643,7 +611,7 @@ const App: React.FC = () => {
                <p className="text-slate-400 font-bold uppercase tracking-[0.2em] mt-2">Personalize & Connect</p>
              </header>
 
-             {/* AVATAR PICKER (Simplified) */}
+             {/* AVATAR PICKER */}
              <section className="bg-white dark:bg-slate-900 p-8 rounded-[3rem] border dark:border-slate-800 shadow-xl flex flex-col items-center gap-6">
                 <button 
                   onClick={() => setShowAvatarPicker(!showAvatarPicker)}
@@ -678,99 +646,124 @@ const App: React.FC = () => {
                      <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} onBlur={handleNameBlur} className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-lg transition-all shadow-inner" />
                    </div>
                    <div className="grid grid-cols-2 gap-4">
-                     <button onClick={() => setUserGender('male')} className={`py-4 rounded-2xl border-2 font-black text-xs uppercase tracking-widest transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👨 Masculine Style</button>
-                     <button onClick={() => setUserGender('female')} className={`py-4 rounded-2xl border-2 font-black text-xs uppercase tracking-widest transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👩 Feminine Style</button>
+                     <button onClick={() => handleGenderChange('male')} className={`py-4 rounded-2xl border-2 font-black text-xs uppercase tracking-widest transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>Male</button>
+                     <button onClick={() => handleGenderChange('female')} className={`py-4 rounded-2xl border-2 font-black text-xs uppercase tracking-widest transition-all ${userGender === 'female' ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>Female</button>
                    </div>
                 </div>
              </section>
 
-             {/* THEME TOGGLE */}
-             <section className="bg-white dark:bg-slate-900 p-10 rounded-[3.5rem] border dark:border-slate-800 shadow-xl flex items-center justify-between">
-                <div>
-                   <h3 className="text-xl font-black dark:text-white">Appearance</h3>
-                   <p className="text-[10px] font-black uppercase text-slate-400 mt-1">Currently in {darkMode ? 'Dark' : 'Light'} Mode</p>
-                </div>
-                <button 
-                  onClick={() => setDarkMode(!darkMode)}
-                  className={`w-20 h-10 rounded-full transition-all relative p-1 ${darkMode ? 'bg-indigo-600' : 'bg-slate-200'}`}
-                >
-                  <div className={`w-8 h-8 rounded-full bg-white flex items-center justify-center shadow-xl transition-transform duration-300 ${darkMode ? 'translate-x-10' : 'translate-x-0'}`}>
-                    {darkMode ? '🌙' : '☀️'}
-                  </div>
-                </button>
-             </section>
-
-             {/* PARTNER LIST */}
+             {/* CONNECTION HUB (YOUR CIRCLE + YOUR CODE) */}
              <section className="bg-white dark:bg-slate-900 p-10 rounded-[3.5rem] border dark:border-slate-800 shadow-2xl space-y-8">
                 <div className="flex items-center justify-between">
-                    <h3 className="text-xl font-black dark:text-white">Your Circle</h3>
-                    <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-5 py-2.5 rounded-xl shadow-lg hover:shadow-indigo-500/20 active:scale-95 transition-all">Connect New</button>
+                    <h3 className="text-xl font-black dark:text-white">Connection Hub</h3>
                 </div>
+
+                {/* YOUR CODE DISPLAY */}
+                <div className="bg-slate-50 dark:bg-slate-950 p-6 rounded-[2.5rem] flex flex-col items-center justify-center border-2 border-slate-100 dark:border-slate-800 relative overflow-hidden group">
+                   <p className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-500 dark:text-indigo-400 mb-2">Share Your Room Code</p>
+                   <p className="text-4xl font-black text-slate-900 dark:text-white tracking-[0.2em] mb-3">{myRoomCode}</p>
+                   <button onClick={regenerateMyCode} className="text-[10px] font-black uppercase text-slate-400 hover:text-indigo-500 transition-colors z-10">Rotate Address</button>
+                   <div className="absolute inset-0 bg-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
+                </div>
+
+                {/* PARTNER LIST */}
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between px-2">
+                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Connected Partners</span>
+                     <button onClick={() => setShowAddPartnerModal(true)} className="bg-indigo-600 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl shadow-lg hover:shadow-indigo-500/20 active:scale-95 transition-all">Connect New</button>
+                  </div>
+
                   {partners.map(p => (
-                    <div key={p.id} className={`flex items-center justify-between p-6 rounded-[2.5rem] border-2 transition-all ${activePartnerId === p.id ? 'border-indigo-500 bg-indigo-50/20 dark:bg-indigo-900/10' : 'border-slate-50 dark:border-slate-800 bg-slate-50/10 dark:bg-slate-950/20'}`}>
-                      <div className="flex items-center space-x-5">
-                        <div className="w-14 h-14 rounded-[1.5rem] flex items-center justify-center text-3xl bg-indigo-500 text-white shadow-xl">{p.state.avatar || '👨'}</div>
+                    <div key={p.id} className={`flex items-center justify-between p-5 rounded-[2.5rem] border-2 transition-all ${activePartnerId === p.id ? 'border-indigo-500 bg-indigo-50/20 dark:bg-indigo-900/10' : 'border-slate-50 dark:border-slate-800 bg-slate-50/10 dark:bg-slate-950/20'}`}>
+                      <div className="flex items-center space-x-4">
+                        <div className="w-12 h-12 rounded-[1.2rem] flex items-center justify-center text-2xl bg-indigo-500 text-white shadow-md">{p.state.avatar || '👨'}</div>
                         <div>
-                          <p className="text-base font-black dark:text-white leading-none">{p.state.name}</p>
-                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2 opacity-70">Room: {p.roomCode}</p>
+                          <p className="text-sm font-black dark:text-white leading-none">{p.state.name}</p>
+                          <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1.5 opacity-70">Room: {p.roomCode}</p>
                         </div>
                       </div>
-                      <div className="flex items-center space-x-3">
-                         <button onClick={() => setActivePartnerId(p.id)} className={`text-[10px] font-black px-4 py-2 rounded-xl transition-all ${activePartnerId === p.id ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'}`}>
-                            {activePartnerId === p.id ? 'Focused' : 'Switch'}
+                      <div className="flex items-center space-x-2">
+                         <button onClick={() => setActivePartnerId(p.id)} className={`text-[9px] font-black px-3 py-2 rounded-xl transition-all ${activePartnerId === p.id ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'}`}>
+                            {activePartnerId === p.id ? 'Active' : 'View'}
                          </button>
-                         <button onClick={() => removePartner(p.id)} className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-colors">
-                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                         <button onClick={() => removePartner(p.id)} className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-colors" title="Permanently Remove">
+                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                          </button>
                       </div>
                     </div>
                   ))}
                   {partners.length === 0 && (
-                    <div className="text-center py-16 opacity-40 grayscale flex flex-col items-center">
-                      <div className="text-4xl mb-4">🛸</div>
-                      <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Deep Space: No Partners Found</p>
+                    <div className="text-center py-10 opacity-40 grayscale flex flex-col items-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-[2.5rem]">
+                      <div className="text-3xl mb-2">🛸</div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Deep Space: No Partners</p>
                     </div>
                   )}
                 </div>
              </section>
 
-             {/* DEBUG SECTION */}
-             <section className="bg-indigo-50/50 dark:bg-slate-900/50 p-8 rounded-[3rem] border border-dashed border-indigo-200 dark:border-slate-800">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-black dark:text-white flex items-center gap-2">
-                    🛠️ Debug & Testing
-                  </h3>
-                  <div className={`w-3 h-3 rounded-full shadow-lg animate-pulse ${isAuthReady ? 'bg-emerald-500 shadow-emerald-500/50' : 'bg-yellow-500 shadow-yellow-500/50'}`}></div>
+             {/* THEME & SYSTEM */}
+             <section className="bg-white dark:bg-slate-900 p-10 rounded-[3.5rem] border dark:border-slate-800 shadow-xl space-y-6">
+                <div className="flex items-center justify-between">
+                    <div>
+                       <h3 className="text-xl font-black dark:text-white">System</h3>
+                       <p className="text-[10px] font-black uppercase text-slate-400 mt-1">App Settings</p>
+                    </div>
                 </div>
                 
-                {firebaseError && (
-                    <div className="mb-4 bg-rose-500 text-white p-4 rounded-2xl text-xs font-bold leading-relaxed shadow-xl">
-                        ⚠️ {firebaseError}
-                    </div>
-                )}
-                
-                <p className="text-[10px] font-bold text-slate-400 mb-6 leading-relaxed">
-                  Verify connectivity. If Cloud Sync fails due to configuration, use the Local Simulation to test the UI.
-                </p>
-                <div className="space-y-3">
-                    <button 
-                      onClick={spawnTestPartner}
-                      className="w-full py-4 bg-white dark:bg-slate-800 border-2 border-indigo-100 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 rounded-2xl font-black text-xs uppercase tracking-widest hover:border-indigo-500 transition-all active:scale-95 shadow-sm"
+                <div className="flex items-center justify-between">
+                   <div>
+                       <h4 className="font-bold dark:text-white">Dark Mode</h4>
+                       <p className="text-[10px] font-black uppercase text-slate-400">Toggle Theme</p>
+                   </div>
+                   <button 
+                      onClick={() => setDarkMode(!darkMode)}
+                      className={`w-16 h-8 rounded-full transition-all relative p-1 ${darkMode ? 'bg-indigo-600' : 'bg-slate-200'}`}
                     >
-                      Spawn Cloud Bot (Needs Config)
+                      <div className={`w-6 h-6 rounded-full bg-white flex items-center justify-center shadow-md transition-transform duration-300 ${darkMode ? 'translate-x-8' : 'translate-x-0'}`}>
+                        {darkMode ? '🌙' : '☀️'}
+                      </div>
                     </button>
-                    <button 
-                      onClick={spawnLocalPartner}
-                      className="w-full py-4 bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-100 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 rounded-2xl font-black text-xs uppercase tracking-widest hover:border-emerald-500 transition-all active:scale-95 shadow-sm"
+                </div>
+
+                <div className="pt-6 border-t dark:border-slate-800">
+                    {!isStandalone && deferredPrompt && (
+                         <div className="mt-2">
+                             <button 
+                               onClick={handleInstallClick}
+                               className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-3"
+                             >
+                               <span className="text-lg">📲</span> Add to Home Screen
+                             </button>
+                         </div>
+                    )}
+                    {isStandalone && (
+                         <div className="text-center p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-800">
+                            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">✨ App Installed</p>
+                         </div>
+                    )}
+                </div>
+             </section>
+
+             {/* DATA & STORAGE */}
+             <section className="bg-white dark:bg-slate-900 p-10 rounded-[3.5rem] border dark:border-slate-800 shadow-xl space-y-6">
+                <h3 className="text-xl font-black dark:text-white text-rose-500">Danger Zone</h3>
+                
+                <div className="flex items-center justify-between">
+                   <div>
+                       <h4 className="font-bold dark:text-white">Reset App</h4>
+                       <p className="text-[10px] font-black uppercase text-slate-400">Clear all local data</p>
+                   </div>
+                   <button 
+                      onClick={handleClearData}
+                      className="bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-colors"
                     >
-                      Spawn Local Partner (Offline)
+                      Clear Data
                     </button>
                 </div>
              </section>
 
              <div className="pb-10 text-center opacity-30">
-               <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Version 1.2.0 • Cloud Sync</p>
+               <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Version 1.3.2 • Cloud Sync</p>
              </div>
           </div>
         )}

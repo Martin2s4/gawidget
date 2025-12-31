@@ -8,6 +8,8 @@ interface WidgetViewProps {
   userB: UserState;
   onActivityChange?: (type: ActivityType) => void;
   onMoodChange?: (mood: string) => void;
+  showInstall?: boolean;
+  onInstall?: () => void;
 }
 
 const UserPanel: React.FC<{ 
@@ -104,7 +106,7 @@ const UserPanel: React.FC<{
   );
 };
 
-export const WidgetView: React.FC<WidgetViewProps> = ({ userA, userB, onActivityChange, onMoodChange }) => {
+export const WidgetView: React.FC<WidgetViewProps> = ({ userA, userB, onActivityChange, onMoodChange, showInstall, onInstall }) => {
   return (
     <div className="widget-container w-full max-w-sm mx-auto relative group">
       <div className="widget-inner relative flex aspect-[4/4.5] rounded-[4rem] overflow-hidden border-[12px] border-slate-900 dark:border-slate-800 bg-slate-900 dark:bg-slate-800 shadow-[0_35px_60px_-15px_rgba(0,0,0,0.3)] transform transition-transform duration-500 hover:scale-[1.02]">
@@ -112,6 +114,18 @@ export const WidgetView: React.FC<WidgetViewProps> = ({ userA, userB, onActivity
         <UserPanel user={userA} isMe onActivityChange={onActivityChange} onMoodChange={onMoodChange} />
         <UserPanel user={userB} isRight />
       </div>
+
+      {/* Install Button directly on the Widget Card */}
+      {showInstall && (
+        <button
+           onClick={onInstall}
+           className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-6 py-2.5 rounded-full shadow-2xl border-4 border-slate-50 dark:border-slate-950 z-20 flex items-center gap-2 animate-bounce active:scale-95 transition-all"
+        >
+           <span className="text-lg">📲</span>
+           <span className="text-[10px] font-black uppercase tracking-widest">Install App</span>
+        </button>
+      )}
+
       <div className="absolute inset-0 pointer-events-none rounded-[4rem] bg-gradient-to-tr from-white/10 to-transparent opacity-30 dark:opacity-5"></div>
     </div>
   );
