@@ -1,12 +1,13 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { ActivityType, UserState, Gender, Message, PartnerRecord } from './types';
 import { ACTIVITIES, MOODS, AVATARS, INITIAL_ACTIVITY, ACTIVITY_DEFAULT_MOODS } from './constants';
 import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
-
-// Global Broadcast Channel for P2P Simulation
-const syncChannel = new BroadcastChannel('partnersync_v12_final_polish');
+import { db, auth } from './services/firebase';
+import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit } from 'firebase/firestore';
+import { signInAnonymously } from 'firebase/auth';
 
 const App: React.FC = () => {
   // --- User Identity ---
@@ -27,17 +28,17 @@ const App: React.FC = () => {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
   // --- Multi-Partner State ---
-  const [partners, setPartners] = useState<PartnerRecord[]>(() => {
-    const saved = localStorage.getItem('partner_list');
+  // We store IDs of partners locally, but their STATE comes from Firestore live listeners
+  const [partnerIds, setPartnerIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('partner_ids_list');
     return saved ? JSON.parse(saved) : [];
   });
+  
+  const [partners, setPartners] = useState<PartnerRecord[]>([]);
   const [activePartnerId, setActivePartnerId] = useState<string | null>(() => localStorage.getItem('active_partner_id'));
 
-  const [messages, setMessages] = useState<Record<string, Message[]>>(() => {
-    const saved = localStorage.getItem('chat_histories');
-    return saved ? JSON.parse(saved) : {};
-  });
-
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  
   const [myState, setMyState] = useState<UserState>(() => {
     const saved = localStorage.getItem('my_state');
     return saved ? JSON.parse(saved) : { id: userId, name: userName || 'Me', avatar: userAvatar, gender: userGender, activity: INITIAL_ACTIVITY };
@@ -46,7 +47,7 @@ const App: React.FC = () => {
   // --- UI Control ---
   const [activeTab, setActiveTab] = useState<'status' | 'widget' | 'chat' | 'settings'>('status');
   const [welcomeText, setWelcomeText] = useState('');
-  const [humorCaption, setHumorCaption] = useState('Sync engine ready.');
+  const [humorCaption, setHumorCaption] = useState('Cloud sync active.');
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customInputValue, setCustomInputValue] = useState('');
   const [showAddPartnerModal, setShowAddPartnerModal] = useState(false);
@@ -54,13 +55,15 @@ const App: React.FC = () => {
   const [partnerCodeInput, setPartnerCodeInput] = useState('');
   const [showMoodDropdown, setShowMoodDropdown] = useState(false);
   const [chatText, setChatText] = useState('');
-  const [typingPartnerIds, setTypingPartnerIds] = useState<Set<string>>(new Set());
+  
+  // Flag to ensure we don't try to sync until Auth is ready (fixes permission errors)
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
+  
+  // NOTE: Typing indicators require more complex Firestore logic (presence), skipping for MVP to save writes
+  const [typingPartnerIds] = useState<Set<string>>(new Set());
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const partnersRef = useRef(partners);
-
-  // --- Sync References ---
-  useEffect(() => { partnersRef.current = partners; }, [partners]);
 
   // --- Persistence & Theme ---
   useEffect(() => {
@@ -70,237 +73,334 @@ const App: React.FC = () => {
     localStorage.setItem('user_avatar', userAvatar);
     localStorage.setItem('is_onboarded', isOnboarded.toString());
     localStorage.setItem('my_state', JSON.stringify(myState));
-    localStorage.setItem('partner_list', JSON.stringify(partners));
+    localStorage.setItem('partner_ids_list', JSON.stringify(partnerIds));
     localStorage.setItem('active_partner_id', activePartnerId || '');
-    localStorage.setItem('chat_histories', JSON.stringify(messages));
     localStorage.setItem('theme', darkMode ? 'dark' : 'light');
     localStorage.setItem('my_room_code', myRoomCode);
     
     if (darkMode) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
-  }, [myState, partners, activePartnerId, messages, userName, userGender, userAvatar, isOnboarded, myRoomCode, darkMode, userId]);
+  }, [myState, partnerIds, activePartnerId, userName, userGender, userAvatar, isOnboarded, myRoomCode, darkMode, userId]);
 
-  // --- THE MULTI-SYNC ENGINE ---
+
+  // --- FIREBASE AUTH & SYNC ENGINE ---
+
+  // 0. Authenticate
+  useEffect(() => {
+    if (!auth) {
+      setIsAuthReady(true);
+      return;
+    }
+    signInAnonymously(auth)
+      .then(() => {
+        console.log("🔥 Authenticated anonymously");
+        setIsAuthReady(true);
+        setFirebaseError(null);
+      })
+      .catch((err) => {
+        console.error("Auth failed:", err);
+        // Handle specific configuration errors gracefully so the app doesn't crash
+        if (err.code === 'auth/configuration-not-found' || err.code === 'auth/operation-not-allowed') {
+            setFirebaseError("Enable 'Anonymous' Sign-in in Firebase Console > Authentication.");
+        } else {
+            setFirebaseError(err.message);
+        }
+        // We set ready to true anyway so app doesn't hang, but sync might fail if rules require auth
+        setIsAuthReady(true); 
+      });
+  }, []);
+
+  // 1. Publish Myself to Cloud
+  useEffect(() => {
+    if (!db || !isAuthReady) return;
+    // Debounce slightly or just write on change. Firestore handles it well.
+    const userRef = doc(db, 'users', userId);
+    
+    // We add 'roomCode' to the document so partners can search for us by code
+    const payload = { ...myState, roomCode: myRoomCode, lastUpdated: Date.now() };
+    
+    setDoc(userRef, payload, { merge: true }).catch(err => console.error("Sync failed:", err));
+  }, [myState, myRoomCode, userId, isAuthReady]);
+
+  // 2. Subscribe to Partners
+  useEffect(() => {
+    if (!db || !isAuthReady || partnerIds.length === 0) {
+        // If we have no cloud partners, we don't clear local state immediately to support local simulation
+        if (partnerIds.length === 0) setPartners([]);
+        return;
+    }
+
+    const unsubs = partnerIds.map(pid => {
+       // Skip listeners for local-only bots
+       if (pid.startsWith('local_')) return () => {};
+
+       return onSnapshot(doc(db, 'users', pid), (docSnap) => {
+         if (docSnap.exists()) {
+           const data = docSnap.data() as UserState & { roomCode: string };
+           setPartners(prev => {
+             const others = prev.filter(p => p.id !== pid);
+             return [...others, { id: pid, roomCode: data.roomCode, state: data, lastSeen: Date.now() }];
+           });
+         }
+       }, (error) => {
+         console.warn(`Sync warning for ${pid} (likely permission issue):`, error);
+       });
+    });
+
+    return () => unsubs.forEach(unsub => unsub());
+  }, [partnerIds, isAuthReady]);
+
+  // 3. Subscribe to Chat
+  useEffect(() => {
+    if (!db || !isAuthReady || !activePartnerId || activePartnerId.startsWith('local_')) return;
+
+    // Create a unique chat ID based on sorted user IDs (so A-B and B-A share the same chat)
+    const chatId = [userId, activePartnerId].sort().join('_');
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(messagesRef, orderBy('timestamp', 'asc'), limit(50));
+
+    const unsub = onSnapshot(q, (snapshot) => {
+       const msgs: Message[] = [];
+       snapshot.forEach(doc => msgs.push(doc.data() as Message));
+       setMessages(prev => ({ ...prev, [activePartnerId]: msgs }));
+    }, (error) => {
+      console.error("Chat sync error:", error);
+    });
+
+    return () => unsub();
+  }, [activePartnerId, userId, isAuthReady]);
+
   useEffect(() => {
     setWelcomeText(WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)]);
-
-    const handleMessage = (event: MessageEvent) => {
-      const { type, payload, senderId, senderRoomCode, targetRoomCode } = event.data;
-      if (senderId === userId) return;
-
-      const isTargetedToMe = targetRoomCode === myRoomCode;
-      const partnerIndex = partnersRef.current.findIndex(p => p.roomCode === senderRoomCode);
-      const isFromPartner = partnerIndex !== -1;
-
-      switch (type) {
-        case 'P2P_HANDSHAKE':
-          if (isTargetedToMe || isFromPartner) {
-            setPartners(prev => {
-              const existing = prev.find(p => p.id === senderId);
-              if (existing) {
-                 // Conflict resolution: Latest timestamp wins (if payloads differ in timestamp)
-                if (existing.state.activity.timestamp > payload.activity.timestamp) {
-                  return prev; // Ignore older updates
-                }
-                return prev.map(p => p.id === senderId ? { ...p, state: payload, lastSeen: Date.now(), roomCode: senderRoomCode } : p);
-              }
-              return [...prev, { id: senderId, roomCode: senderRoomCode, state: payload, lastSeen: Date.now() }];
-            });
-
-            if (event.data.isInitial && isTargetedToMe) {
-              syncChannel.postMessage({
-                type: 'P2P_HANDSHAKE',
-                payload: myState,
-                senderId: userId,
-                senderRoomCode: myRoomCode,
-                targetRoomCode: senderRoomCode,
-                isInitial: false
-              });
-            }
-          }
-          break;
-
-        case 'P2P_UPDATE':
-          if (isFromPartner) {
-            setPartners(prev => prev.map(p => {
-              if (p.roomCode === senderRoomCode) {
-                 // Conflict resolution: Latest timestamp wins
-                 if (p.state.activity.timestamp > payload.activity.timestamp) {
-                   return p;
-                 }
-                 return { ...p, state: payload, lastSeen: Date.now() };
-              }
-              return p;
-            }));
-          }
-          break;
-
-        case 'P2P_MSG':
-          if (isFromPartner && targetRoomCode === myRoomCode) {
-            setMessages(prev => ({
-              ...prev,
-              [senderId]: [...(prev[senderId] || []), payload]
-            }));
-          }
-          break;
-
-        case 'P2P_TYPING':
-          if (isFromPartner && targetRoomCode === myRoomCode) {
-            setTypingPartnerIds(prev => {
-              const next = new Set(prev);
-              if (payload) next.add(senderId);
-              else next.delete(senderId);
-              return next;
-            });
-          }
-          break;
-
-        case 'P2P_UNLINK':
-          if (isFromPartner && targetRoomCode === myRoomCode) {
-            setPartners(prev => prev.filter(p => p.roomCode !== senderRoomCode));
-          }
-          break;
-      }
-    };
-
-    syncChannel.addEventListener('message', handleMessage);
-    return () => syncChannel.removeEventListener('message', handleMessage);
-  }, [userId, myState, myRoomCode]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'chat') chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activeTab, typingPartnerIds]);
+  }, [messages, activeTab]);
 
   // --- Actions ---
-  const broadcastStatus = (updatedState: UserState) => {
-    syncChannel.postMessage({
-      type: 'P2P_UPDATE',
-      payload: updatedState,
-      senderId: userId,
-      senderRoomCode: myRoomCode
-    });
-  };
 
   const regenerateMyCode = () => {
     const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     setMyRoomCode(newCode);
+    // The useEffect [myState, myRoomCode] will auto-sync this to Firestore
   };
 
-  const handleActivityUpdate = async (type: ActivityType, customText?: string) => {
-    let lat, lon;
+  const spawnTestPartner = async () => {
+    if (!db) {
+      alert("Database not connected.");
+      return;
+    }
+    if (!isAuthReady) {
+      alert("Connecting to server... Please wait.");
+      return;
+    }
     try {
-      // simulate minimal delay or real fetch if permitted
-      const pos = await new Promise<GeolocationPosition>((res, rej) => 
-        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 800 })
-      );
-      lat = pos.coords.latitude; lon = pos.coords.longitude;
-    } catch {}
+      const botId = "bot_test_01";
+      await setDoc(doc(db, "users", botId), {
+        id: botId,
+        name: "Cloud Bot 3000",
+        avatar: "☁️",
+        gender: "male",
+        roomCode: "TEST01",
+        lastUpdated: Date.now(),
+        activity: {
+          type: ActivityType.GAMING,
+          statusText: "Running cloud diagnostics",
+          mood: "🤖 Beep Boop",
+          timestamp: Date.now(),
+          weather: { temp: 20, condition: "Cloudy", icon: "☁️" }
+        }
+      });
 
-    const weather = getSimulatedWeather(lat, lon);
+      // Auto-Link locally so it appears immediately
+      if (!partnerIds.includes(botId)) {
+        setPartnerIds(prev => [...prev, botId]);
+        setActivePartnerId(botId);
+      }
+
+      alert("✅ Cloud Bot Created & Linked! \n\nIt should appear in your list immediately.");
+    } catch (e: any) {
+      console.error("Failed to spawn bot:", e);
+      if (e.code === 'permission-denied') {
+          if (firebaseError) {
+             alert(`❌ Failed: Auth Config Missing\n\nReason: ${firebaseError}\n\nFix: Go to Firebase Console -> Authentication -> Sign-in method -> Enable Anonymous.`);
+          } else {
+             alert("❌ Failed: Permission Denied\n\nYour Firestore Rules are blocking this write.\n\nQuick Fix: Go to Firebase Console -> Firestore -> Rules -> Change to:\nallow read, write: if true;");
+          }
+      } else {
+          alert(`Error: ${e.message}\n\nCheck console for details.`);
+      }
+    }
+  };
+
+  const spawnLocalPartner = () => {
+    const localId = "local_bot_" + Math.floor(Math.random() * 1000);
+    const localUser: UserState = {
+        id: localId,
+        name: "Offline Bot",
+        gender: "female",
+        avatar: "🤖",
+        activity: { ...INITIAL_ACTIVITY, type: ActivityType.CODING, statusText: "Simulating locally...", mood: "⚡ Fast" }
+    };
     
-    // Auto-suggest mood based on activity (Feature Requirement #6)
-    // If it's a new activity type, switch the mood to the default for that activity.
+    // Manually inject into partners state, bypassing Firestore listeners for now
+    setPartners(prev => {
+        return [...prev, { id: localId, roomCode: "LOCAL", state: localUser, lastSeen: Date.now() }];
+    });
+    setActivePartnerId(localId);
+    if (!partnerIds.includes(localId)) {
+      setPartnerIds(prev => [...prev, localId]);
+    }
+    alert("✅ Local partner spawned! (Data is not synced to cloud, but you can test the UI)");
+  };
+
+  const handleActivityUpdate = (type: ActivityType, customText?: string) => {
     const suggestedMood = ACTIVITY_DEFAULT_MOODS[type] || myState.activity.mood;
-    
     const caption = getHumorousCaption(type, customText || 'Active', suggestedMood);
+    const timestamp = Date.now();
 
-    const updated = {
+    const optimisticActivity = { 
+        ...myState.activity, 
+        type, 
+        customText, 
+        timestamp, 
+        mood: suggestedMood,
+        statusText: 'Updated now'
+    };
+
+    const nextState = {
       ...myState,
       name: userName || 'Me',
       gender: userGender,
       avatar: userAvatar,
-      activity: { 
-        ...myState.activity, 
-        type, 
-        customText, 
-        timestamp: Date.now(), 
-        weather,
-        mood: suggestedMood, // Apply auto-suggestion
-        statusText: 'Updated now' 
-      }
+      activity: optimisticActivity
     };
     
-    setMyState(updated);
+    setMyState(nextState);
     setHumorCaption(caption);
     setShowCustomModal(false);
-    broadcastStatus(updated);
+
+    // Background Weather Fetch
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const weather = getSimulatedWeather(pos.coords.latitude, pos.coords.longitude);
+      setMyState(current => {
+        if (current.activity.timestamp === timestamp) {
+           return { ...current, activity: { ...current.activity, weather } };
+        }
+        return current;
+      });
+    }, () => {
+       const weather = getSimulatedWeather(); 
+       setMyState(current => {
+        if (current.activity.timestamp === timestamp) {
+           return { ...current, activity: { ...current.activity, weather } };
+        }
+        return current;
+      });
+    }, { timeout: 3000 });
   };
 
   const handleAvatarChange = (emoji: string) => {
     setUserAvatar(emoji);
-    const updated = { ...myState, avatar: emoji, name: userName };
-    setMyState(updated);
+    setMyState(prev => ({ 
+      ...prev, 
+      avatar: emoji, 
+      activity: { ...prev.activity, timestamp: Date.now() }
+    }));
     setShowAvatarPicker(false);
-    // Explicitly broadcast a handshake update to force all partners to "recognize" the new face
-    syncChannel.postMessage({
-      type: 'P2P_HANDSHAKE',
-      payload: updated,
-      senderId: userId,
-      senderRoomCode: myRoomCode,
-      isInitial: false
-    });
+  };
+
+  const handleNameBlur = () => {
+    if (userName !== myState.name) {
+      setMyState(prev => ({ 
+        ...prev, 
+        name: userName,
+        activity: { ...prev.activity, timestamp: Date.now() }
+      }));
+    }
   };
 
   const updateMood = (moodStr: string) => {
-    const updated = { ...myState, activity: { ...myState.activity, mood: moodStr, timestamp: Date.now() } };
-    setMyState(updated);
+    setMyState(prev => ({ ...prev, activity: { ...prev.activity, mood: moodStr, timestamp: Date.now() } }));
     setShowMoodDropdown(false);
-    broadcastStatus(updated);
   };
 
-  const sendText = () => {
-    if (!chatText.trim() || !activePartnerId) return;
-    const msg: Message = { id: Math.random().toString(36), senderId: userId, text: chatText, timestamp: Date.now() };
+  const sendText = async () => {
+    if (!chatText.trim() || !activePartnerId || !db) return;
+    
+    const msg: Message = { 
+      id: Math.random().toString(36), 
+      senderId: userId, 
+      text: chatText, 
+      timestamp: Date.now() 
+    };
+    
+    // Optimistic UI update
     setMessages(prev => ({
       ...prev,
       [activePartnerId]: [...(prev[activePartnerId] || []), msg]
     }));
     setChatText('');
     
-    const partner = partners.find(p => p.id === activePartnerId);
-    if (partner) {
-      syncChannel.postMessage({
-        type: 'P2P_MSG',
-        payload: msg,
-        senderId: userId,
-        senderRoomCode: myRoomCode,
-        targetRoomCode: partner.roomCode
-      });
+    // Only send to cloud if not local bot
+    if (!activePartnerId.startsWith('local_')) {
+        const chatId = [userId, activePartnerId].sort().join('_');
+        try {
+          await addDoc(collection(db, 'chats', chatId, 'messages'), msg);
+        } catch(e) {
+          console.error("Error sending message", e);
+        }
     }
   };
 
-  const addPartner = () => {
+  const addPartner = async () => {
     const code = partnerCodeInput.trim().toUpperCase();
-    if (!code || code === myRoomCode) return;
+    if (!code || code === myRoomCode || !db) return;
 
-    syncChannel.postMessage({
-      type: 'P2P_HANDSHAKE',
-      payload: myState,
-      senderId: userId,
-      senderRoomCode: myRoomCode,
-      targetRoomCode: code,
-      isInitial: true
-    });
+    // Search for user with this code
+    try {
+      const q = query(collection(db, 'users'), where('roomCode', '==', code));
+      const querySnapshot = await getDocs(q);
+      
+      if (querySnapshot.empty) {
+        alert("No partner found with that Room Code!");
+        return;
+      }
+      
+      let foundPartnerId = "";
+      querySnapshot.forEach(doc => {
+        foundPartnerId = doc.id;
+      });
 
-    setShowAddPartnerModal(false);
-    setPartnerCodeInput('');
+      if (foundPartnerId === userId) {
+        alert("You cannot add yourself!");
+        return;
+      }
+
+      if (!partnerIds.includes(foundPartnerId)) {
+        setPartnerIds(prev => [...prev, foundPartnerId]);
+        setActivePartnerId(foundPartnerId);
+      }
+      
+      setShowAddPartnerModal(false);
+      setPartnerCodeInput('');
+
+    } catch(e) {
+      console.error("Error finding partner", e);
+      alert("Error connecting to cloud. Check console for details.");
+    }
   };
 
   const removePartner = (id: string) => {
-    const partner = partners.find(p => p.id === id);
-    if (partner) {
-      syncChannel.postMessage({
-        type: 'P2P_UNLINK',
-        senderId: userId,
-        senderRoomCode: myRoomCode,
-        targetRoomCode: partner.roomCode
-      });
-    }
+    setPartnerIds(prev => prev.filter(pid => pid !== id));
     setPartners(prev => prev.filter(p => p.id !== id));
     if (activePartnerId === id) setActivePartnerId(null);
   };
 
   const activePartner = partners.find(p => p.id === activePartnerId);
+
+  // --- Render (Identical UI to previous version, just simpler logic) ---
 
   if (!isOnboarded) {
     return (
@@ -464,7 +564,7 @@ const App: React.FC = () => {
                    <div ref={chatEndRef} />
                 </div>
                 <div className="p-6 bg-white dark:bg-slate-900 border-t dark:border-slate-800 flex gap-3">
-                  <input type="text" placeholder="Speak your mind..." value={chatText} onFocus={() => broadcastStatus({ ...myState })} onBlur={() => broadcastStatus({ ...myState })} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendText()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white outline-none font-bold" />
+                  <input type="text" placeholder="Speak your mind..." value={chatText} onFocus={() => handleActivityUpdate(myState.activity.type)} onChange={e => setChatText(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendText()} className="flex-1 px-6 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white outline-none font-bold" />
                   <button onClick={sendText} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black active:scale-95 transition-all shadow-xl shadow-indigo-500/20">Send</button>
                 </div>
                </div>
@@ -517,7 +617,7 @@ const App: React.FC = () => {
                 <div className="space-y-4">
                    <div className="space-y-2">
                      <span className="text-[10px] font-black uppercase text-slate-400 dark:text-slate-600 ml-2">Display Name</span>
-                     <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-lg transition-all shadow-inner" />
+                     <input type="text" placeholder="Your Name" value={userName} onChange={e => setUserName(e.target.value)} onBlur={handleNameBlur} className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-800 dark:text-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-lg transition-all shadow-inner" />
                    </div>
                    <div className="grid grid-cols-2 gap-4">
                      <button onClick={() => setUserGender('male')} className={`py-4 rounded-2xl border-2 font-black text-xs uppercase tracking-widest transition-all ${userGender === 'male' ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400' : 'border-slate-50 dark:border-slate-800 text-slate-400'}`}>👨 Masculine Style</button>
@@ -526,7 +626,7 @@ const App: React.FC = () => {
                 </div>
              </section>
 
-             {/* THEME TOGGLE (Dedicated Hub Section) */}
+             {/* THEME TOGGLE */}
              <section className="bg-white dark:bg-slate-900 p-10 rounded-[3.5rem] border dark:border-slate-800 shadow-xl flex items-center justify-between">
                 <div>
                    <h3 className="text-xl font-black dark:text-white">Appearance</h3>
@@ -576,6 +676,44 @@ const App: React.FC = () => {
                   )}
                 </div>
              </section>
+
+             {/* DEBUG SECTION */}
+             <section className="bg-indigo-50/50 dark:bg-slate-900/50 p-8 rounded-[3rem] border border-dashed border-indigo-200 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-black dark:text-white flex items-center gap-2">
+                    🛠️ Debug & Testing
+                  </h3>
+                  <div className={`w-3 h-3 rounded-full shadow-lg animate-pulse ${isAuthReady ? 'bg-emerald-500 shadow-emerald-500/50' : 'bg-yellow-500 shadow-yellow-500/50'}`}></div>
+                </div>
+                
+                {firebaseError && (
+                    <div className="mb-4 bg-rose-500 text-white p-4 rounded-2xl text-xs font-bold leading-relaxed shadow-xl">
+                        ⚠️ {firebaseError}
+                    </div>
+                )}
+                
+                <p className="text-[10px] font-bold text-slate-400 mb-6 leading-relaxed">
+                  Verify connectivity. If Cloud Sync fails due to configuration, use the Local Simulation to test the UI.
+                </p>
+                <div className="space-y-3">
+                    <button 
+                      onClick={spawnTestPartner}
+                      className="w-full py-4 bg-white dark:bg-slate-800 border-2 border-indigo-100 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 rounded-2xl font-black text-xs uppercase tracking-widest hover:border-indigo-500 transition-all active:scale-95 shadow-sm"
+                    >
+                      Spawn Cloud Bot (Needs Config)
+                    </button>
+                    <button 
+                      onClick={spawnLocalPartner}
+                      className="w-full py-4 bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-100 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 rounded-2xl font-black text-xs uppercase tracking-widest hover:border-emerald-500 transition-all active:scale-95 shadow-sm"
+                    >
+                      Spawn Local Partner (Offline)
+                    </button>
+                </div>
+             </section>
+
+             <div className="pb-10 text-center opacity-30">
+               <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Version 1.2.0 • Cloud Sync</p>
+             </div>
           </div>
         )}
       </main>
