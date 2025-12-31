@@ -6,7 +6,7 @@ import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
 import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
 import { db, auth } from './services/firebase';
-import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 
 const App: React.FC = () => {
@@ -111,13 +111,12 @@ const App: React.FC = () => {
   }, []);
 
   // 1. Publish Myself to Cloud
+  // We do NOT overwrite 'partners' here to avoid race conditions. We only set personal data.
   useEffect(() => {
     if (!db || !isAuthReady) return;
-    // Debounce slightly or just write on change. Firestore handles it well.
     const userRef = doc(db, 'users', userId);
     
-    // Sanitize payload to replace undefined with null for Firestore compatibility
-    // Specifically handle optional fields in UserActivity
+    // Sanitize payload
     const activityPayload = {
         ...myState.activity,
         customText: myState.activity.customText ?? null,
@@ -129,15 +128,45 @@ const App: React.FC = () => {
         activity: activityPayload,
         roomCode: myRoomCode, 
         lastUpdated: Date.now() 
+        // We do NOT send 'partners' here, handled by addPartner/arrayUnion
     };
     
     setDoc(userRef, payload, { merge: true }).catch(err => console.error("Sync failed:", err));
   }, [myState, myRoomCode, userId, isAuthReady]);
 
+  // 1.5 Listen to MYSELF for Incoming Connections
+  // If someone else adds me, my 'partners' array in Firestore will change. 
+  // This listener catches that and updates my local UI automatically.
+  useEffect(() => {
+    if (!db || !isAuthReady) return;
+    
+    const unsub = onSnapshot(doc(db, 'users', userId), (docSnap) => {
+        if (docSnap.exists()) {
+            const data = docSnap.data() as UserState;
+            if (data.partners && Array.isArray(data.partners)) {
+                setPartnerIds(prev => {
+                    // Keep local bots (starting with local_) + Cloud partners
+                    const localBots = prev.filter(id => id.startsWith('local_'));
+                    const cloudPartners = data.partners || [];
+                    
+                    // Merge unique IDs
+                    const merged = Array.from(new Set([...localBots, ...cloudPartners]));
+                    
+                    // Simple check to avoid loop if nothing changed
+                    if (merged.length !== prev.length || !merged.every(val => prev.includes(val))) {
+                        return merged;
+                    }
+                    return prev;
+                });
+            }
+        }
+    });
+    return () => unsub();
+  }, [userId, isAuthReady]);
+
   // 2. Subscribe to Partners
   useEffect(() => {
     if (!db || !isAuthReady || partnerIds.length === 0) {
-        // If we have no cloud partners, we don't clear local state immediately to support local simulation
         if (partnerIds.length === 0) setPartners([]);
         return;
     }
@@ -222,16 +251,18 @@ const App: React.FC = () => {
           mood: "🤖 Beep Boop",
           timestamp: Date.now(),
           weather: { temp: 20, condition: "Cloudy", icon: "☁️" }
-        }
+        },
+        partners: arrayUnion(userId) // Automatically add ME to the Bot's list
+      }, { merge: true });
+
+      // Automatically add Bot to MY list in Cloud
+      // This triggers the self-listener above to update the UI
+      const myRef = doc(db, 'users', userId);
+      await updateDoc(myRef, {
+          partners: arrayUnion(botId)
       });
 
-      // Auto-Link locally so it appears immediately
-      if (!partnerIds.includes(botId)) {
-        setPartnerIds(prev => [...prev, botId]);
-        setActivePartnerId(botId);
-      }
-
-      alert("✅ Cloud Bot Created & Linked! \n\nIt should appear in your list immediately.");
+      alert("✅ Cloud Bot Created & Linked! \n\nCheck your list.");
     } catch (e: any) {
       console.error("Failed to spawn bot:", e);
       if (e.code === 'permission-denied') {
@@ -391,13 +422,27 @@ const App: React.FC = () => {
         return;
       }
 
-      if (!partnerIds.includes(foundPartnerId)) {
-        setPartnerIds(prev => [...prev, foundPartnerId]);
-        setActivePartnerId(foundPartnerId);
-      }
-      
+      // MUTUAL SYNC LOGIC
+      // 1. Add Partner to My List
+      const myRef = doc(db, 'users', userId);
+      await updateDoc(myRef, {
+        partners: arrayUnion(foundPartnerId)
+      });
+
+      // 2. Add Me to Partner's List
+      const partnerRef = doc(db, 'users', foundPartnerId);
+      await updateDoc(partnerRef, {
+        partners: arrayUnion(userId)
+      });
+
+      // Note: We do NOT need to manually setPartnerIds here.
+      // The 'Listen to MYSELF' useEffect will detect the change in 'partners' array
+      // and update the local state automatically.
+
+      setActivePartnerId(foundPartnerId);
       setShowAddPartnerModal(false);
       setPartnerCodeInput('');
+      alert("✅ Linked successfully! You should now appear on each other's devices.");
 
     } catch(e) {
       console.error("Error finding partner", e);

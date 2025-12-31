@@ -45,6 +45,7 @@ export interface UserState {
   gender: Gender;
   activity: UserActivity;
   messages?: Message[];
+  partners?: string[]; // Array of User IDs synced to the cloud
 }
 
 export interface PartnerRecord {
