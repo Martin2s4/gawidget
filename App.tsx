@@ -133,20 +133,51 @@ const App: React.FC = () => {
     const permission = await Notification.requestPermission();
     if (permission === "granted") {
       setNotificationsEnabled(true);
-      new Notification("Notifications Enabled", { body: "You will now see updates from your partners!" });
+      // Try to verify with a test notification
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.showNotification("Notifications Active", {
+             body: "You'll see updates here!",
+             icon: "https://cdn-icons-png.flaticon.com/512/3661/3661330.png",
+             badge: "https://cdn-icons-png.flaticon.com/512/3661/3661330.png"
+          });
+        });
+      }
     }
   };
 
-  const sendNotification = (title: string, options?: NotificationOptions) => {
-    if (notificationsEnabled && Notification.permission === "granted") {
-      // Only notify if the app is hidden OR we are notifying about something not currently in focus
-      if (document.visibilityState === 'hidden' || options?.tag === 'background-update') {
-        new Notification(title, {
-             icon: '/android-chrome-192x192.png',
-             badge: '/android-chrome-192x192.png',
-             ...options
-        });
-      }
+  const sendNotification = async (title: string, options?: NotificationOptions) => {
+    if (!notificationsEnabled || Notification.permission !== "granted") return;
+    
+    // Only notify if app is hidden OR specifically tagged as a background update
+    // We allow messages to notify even if visible if user is not on the chat tab (handled by useEffect logic below)
+    // Here we just ensure we don't block explicit requests.
+    const isHidden = document.visibilityState === 'hidden';
+    const isBackgroundUpdate = options?.tag === 'background-update';
+    
+    if (!isHidden && !isBackgroundUpdate && !options?.tag) return;
+
+    const iconUrl = "https://cdn-icons-png.flaticon.com/512/3661/3661330.png";
+    const finalOptions = {
+        icon: iconUrl,
+        badge: iconUrl,
+        vibrate: [200, 100, 200], // Vibration pattern for mobile
+        ...options
+    };
+
+    try {
+        // Use Service Worker for system notifications (Critical for Android)
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (registration && 'showNotification' in registration) {
+            await registration.showNotification(title, finalOptions);
+        } else {
+            // Fallback for desktop/non-SW environments
+            new Notification(title, finalOptions);
+        }
+    } catch (e) {
+        console.warn("Notification error:", e);
+        // Last resort
+        new Notification(title, finalOptions);
     }
   };
 
@@ -235,8 +266,9 @@ const App: React.FC = () => {
            const current = data.activity;
            
            // Only notify if we have a previous state to compare to (prevents initial load spam)
-           // AND the update is recent (within last 10 seconds to avoid stale updates on reconnect)
-           if (prev && (Date.now() - current.timestamp < 10000)) {
+           // AND the update is recent (within last 60 seconds to avoid stale updates on reconnect)
+           // Increased threshold to 60s to account for network latency
+           if (prev && (Date.now() - current.timestamp < 60000)) {
                const hasChanged = prev.type !== current.type || prev.customText !== current.customText || prev.mood !== current.mood;
                
                if (hasChanged && notificationsEnabled) {
