@@ -26,6 +26,7 @@ export interface UserActivity {
   type: ActivityType;
   customText?: string | null;
   statusText: string;
+  caption?: string; // Humorous vibe check message
   mood: string;
   timestamp: number;
   weather?: WeatherInfo | null;

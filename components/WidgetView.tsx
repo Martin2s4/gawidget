@@ -10,6 +10,7 @@ interface WidgetViewProps {
   onMoodChange?: (mood: string) => void;
   showInstall?: boolean;
   onInstall?: () => void;
+  partnerOnline?: boolean;
 }
 
 const UserPanel: React.FC<{ 
@@ -18,7 +19,8 @@ const UserPanel: React.FC<{
   isMe?: boolean;
   onActivityChange?: (type: ActivityType) => void;
   onMoodChange?: (mood: string) => void;
-}> = ({ user, isRight, isMe, onActivityChange, onMoodChange }) => {
+  isOnline?: boolean;
+}> = ({ user, isRight, isMe, onActivityChange, onMoodChange, isOnline }) => {
   const [showPicker, setShowPicker] = useState(false);
   const activityDef = ACTIVITIES.find(a => a.type === user.activity.type) || ACTIVITIES[0];
   
@@ -33,9 +35,13 @@ const UserPanel: React.FC<{
           <h4 className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
             {isMe ? "YOU" : "PARTNER"}
           </h4>
-          <span className="text-[11px] font-bold text-slate-900 dark:text-white truncate max-w-[80px]">
-            {user.name}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold text-slate-900 dark:text-white truncate max-w-[80px]">
+              {user.name}
+            </span>
+            {/* Online Indicator */}
+            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-amber-900/50 dark:bg-stone-700'}`} title={isOnline ? "Online" : "Offline"} />
+          </div>
         </div>
         <div className="flex items-center bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
           <span className="text-[10px] font-black dark:text-slate-300">{user.activity.weather?.temp}°</span>
@@ -55,8 +61,8 @@ const UserPanel: React.FC<{
           <div className="text-base font-black text-slate-900 dark:text-white leading-none">
             {user.activity.type === 'Custom' ? (user.activity.customText || 'Other') : user.activity.type}
           </div>
-          <div className="text-[9px] font-black text-indigo-500 dark:text-indigo-400 uppercase tracking-[0.15em] mt-2 opacity-90">
-            {user.activity.statusText}
+          <div className="text-[9px] font-black text-indigo-500 dark:text-indigo-400 uppercase tracking-[0.15em] mt-2 opacity-90 max-w-[120px] mx-auto leading-tight">
+            {user.activity.caption || user.activity.statusText}
           </div>
         </div>
       </div>
@@ -106,13 +112,13 @@ const UserPanel: React.FC<{
   );
 };
 
-export const WidgetView: React.FC<WidgetViewProps> = ({ userA, userB, onActivityChange, onMoodChange, showInstall, onInstall }) => {
+export const WidgetView: React.FC<WidgetViewProps> = ({ userA, userB, onActivityChange, onMoodChange, showInstall, onInstall, partnerOnline }) => {
   return (
     <div className="widget-container w-full max-w-sm mx-auto relative group">
       <div className="widget-inner relative flex aspect-[4/4.5] rounded-[4rem] overflow-hidden border-[12px] border-slate-900 dark:border-slate-800 bg-slate-900 dark:bg-slate-800 shadow-[0_35px_60px_-15px_rgba(0,0,0,0.3)] transform transition-transform duration-500 hover:scale-[1.02]">
         <div className="absolute left-1/2 top-0 bottom-0 w-[4px] bg-slate-900/10 dark:bg-slate-800/20 z-10" />
-        <UserPanel user={userA} isMe onActivityChange={onActivityChange} onMoodChange={onMoodChange} />
-        <UserPanel user={userB} isRight />
+        <UserPanel user={userA} isMe onActivityChange={onActivityChange} onMoodChange={onMoodChange} isOnline={true} />
+        <UserPanel user={userB} isRight isOnline={partnerOnline} />
       </div>
 
       {/* Install Button directly on the Widget Card */}

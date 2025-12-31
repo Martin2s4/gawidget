@@ -59,7 +59,7 @@ const CAPTIONS: Record<string, string[]> = {
     "Whisk taking risks. 🥣"
   ],
   [ActivityType.EXERCISING]: [
-    "Getting those gains! 💪",
+    "Getting those gains! ✨",
     "Sweat is just fat crying. 💧",
     "Beast mode activated. 🦍",
     "Running away from problems. 🏃",
@@ -120,6 +120,42 @@ export const getHumorousCaption = (activity: ActivityType, status: string, mood:
   return options[Math.floor(Math.random() * options.length)];
 };
 
+// Map WMO Weather Codes to our format
+const mapWMOToCondition = (code: number): { condition: string; icon: string } => {
+  if (code === 0) return { condition: "Clear", icon: "☀️" };
+  if (code >= 1 && code <= 3) return { condition: "Partly Cloudy", icon: "⛅" };
+  if (code === 45 || code === 48) return { condition: "Foggy", icon: "🌫️" };
+  if (code >= 51 && code <= 57) return { condition: "Drizzle", icon: "🌦️" };
+  if (code >= 61 && code <= 67) return { condition: "Rain", icon: "🌧️" };
+  if (code >= 71 && code <= 77) return { condition: "Snow", icon: "❄️" };
+  if (code >= 80 && code <= 82) return { condition: "Showers", icon: "🌦️" };
+  if (code >= 85 && code <= 86) return { condition: "Snow Showers", icon: "🌨️" };
+  if (code >= 95) return { condition: "Thunderstorm", icon: "⚡" };
+  return { condition: "Clear", icon: "☀️" }; // Default
+};
+
+export const getRealWeather = async (lat: number, lon: number): Promise<WeatherInfo> => {
+  try {
+    const response = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&temperature_unit=celsius`
+    );
+    const data = await response.json();
+    
+    if (!data.current) throw new Error("No weather data");
+
+    const wmo = mapWMOToCondition(data.current.weather_code);
+    
+    return {
+      temp: Math.round(data.current.temperature_2m),
+      condition: wmo.condition,
+      icon: wmo.icon
+    };
+  } catch (error) {
+    console.error("Weather fetch failed, falling back to simulation", error);
+    return getSimulatedWeather();
+  }
+};
+
 export const getSimulatedWeather = (lat?: number, lon?: number): WeatherInfo => {
   const conditions = [
     { condition: "Sunny", icon: "☀️", tempRange: [20, 35] },
@@ -128,8 +164,6 @@ export const getSimulatedWeather = (lat?: number, lon?: number): WeatherInfo => 
     { condition: "Rainy", icon: "🌧️", tempRange: [12, 20] },
     { condition: "Windy", icon: "💨", tempRange: [10, 22] }
   ];
-  // Simple "hash" based on time to keep weather somewhat consistent for short periods if needed, 
-  // but for simulation, random is fine.
   const selected = conditions[Math.floor(Math.random() * conditions.length)];
   const temp = Math.floor(Math.random() * (selected.tempRange[1] - selected.tempRange[0])) + selected.tempRange[0];
 

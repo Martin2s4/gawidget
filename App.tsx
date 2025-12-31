@@ -3,7 +3,7 @@ import { ActivityType, UserState, Gender, Message, PartnerRecord } from './types
 import { ACTIVITIES, MOODS, AVATARS, INITIAL_ACTIVITY, ACTIVITY_DEFAULT_MOODS } from './constants';
 import { ActivityCard } from './components/ActivityCard';
 import { WidgetView } from './components/WidgetView';
-import { getHumorousCaption, getSimulatedWeather, WELCOME_PHRASES } from './services/localSync';
+import { getHumorousCaption, getSimulatedWeather, getRealWeather, WELCOME_PHRASES } from './services/localSync';
 import { db, auth } from './services/firebase';
 import { doc, onSnapshot, setDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
@@ -39,7 +39,7 @@ const App: React.FC = () => {
   
   const [myState, setMyState] = useState<UserState>(() => {
     const saved = localStorage.getItem('my_state');
-    return saved ? JSON.parse(saved) : { id: userId, name: userName || 'Me', avatar: userAvatar, gender: userGender, activity: INITIAL_ACTIVITY };
+    return saved ? JSON.parse(saved) : { id: userId, name: userName || 'Me', avatar: userAvatar, gender: userGender, activity: { ...INITIAL_ACTIVITY, caption: 'Just getting started! 🚀' } };
   });
 
   // --- UI Control ---
@@ -125,7 +125,8 @@ const App: React.FC = () => {
     const activityPayload = {
         ...myState.activity,
         customText: myState.activity.customText ?? null,
-        weather: myState.activity.weather ?? null
+        weather: myState.activity.weather ?? null,
+        caption: myState.activity.caption || null
     };
 
     const payload = { 
@@ -258,7 +259,8 @@ const App: React.FC = () => {
         customText: customText ?? null, 
         timestamp, 
         mood: suggestedMood,
-        statusText: 'Updated now'
+        statusText: 'Updated now',
+        caption: caption
     };
 
     const nextState = {
@@ -273,9 +275,9 @@ const App: React.FC = () => {
     setHumorCaption(caption);
     setShowCustomModal(false);
 
-    // Background Weather Fetch
-    navigator.geolocation.getCurrentPosition((pos) => {
-      const weather = getSimulatedWeather(pos.coords.latitude, pos.coords.longitude);
+    // Background Weather Fetch with Open-Meteo
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const weather = await getRealWeather(pos.coords.latitude, pos.coords.longitude);
       setMyState(current => {
         if (current.activity.timestamp === timestamp) {
            return { ...current, activity: { ...current.activity, weather } };
@@ -290,7 +292,7 @@ const App: React.FC = () => {
         }
         return current;
       });
-    }, { timeout: 3000 });
+    }, { timeout: 10000 });
   };
 
   const handleAvatarChange = (emoji: string) => {
@@ -447,6 +449,7 @@ const App: React.FC = () => {
   };
 
   const activePartner = partners.find(p => p.id === activePartnerId);
+  const partnerOnline = activePartner ? (Date.now() - activePartner.lastSeen < 120000) : false; // 2 min threshold
 
   // --- Render ---
 
@@ -572,6 +575,7 @@ const App: React.FC = () => {
               onMoodChange={updateMood}
               showInstall={!isStandalone && !!deferredPrompt}
               onInstall={handleInstallClick}
+              partnerOnline={partnerOnline}
             />
           </div>
         )}
